@@ -130,7 +130,7 @@ async def lifespan(app: FastAPI):
         load_seed()
     except FileNotFoundError:
         print(
-            "NOTE: No seed yet — run `python bootstrap.py` to create one.",
+            "NOTE: No seed yet — run ./setup.sh to create one.",
             file=sys.stderr,
         )
     except SeedIntegrityError as e:

@@ -27,14 +27,17 @@ else's.
 
 ```bash
 git clone <this-repo> vex && cd vex
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+./setup.sh                      # prompts for your name, builds identity, venv, CLI
 
-python bootstrap.py            # creates blank identity from templates
-$EDITOR vex_seed.txt           # write your agent into existence
+# setup.sh creates your Vex home (default ~/vex), fills the identity
+# templates with your name/date, installs deps, and links the `vex` CLI.
 
-python vex_daemon/daemon.py    # starts on http://localhost:8520
+python -m vex_daemon.daemon     # starts on http://localhost:8520
 ```
+
+Prefer to do it by hand? Create a venv, `pip install -e .`, copy
+`seed.template.txt` → `$VEX_HOME/vex_seed.txt` (substituting your name), and
+edit it directly.
 
 On first daemon start an auth token is generated at `.vex_token` (mode 0600).
 The CLI reads it automatically; external callers must send
@@ -88,15 +91,17 @@ Writes (token required): `POST /diary` `POST /self/update` `POST /memory`
 ## Layout
 
 ```
-vex_seed.template.txt          # ships; copied to vex_seed.txt on bootstrap
-vex_self_model.template.json   # ships; copied to vex_self_model.json
-bootstrap.py                   # first-run setup
-requirements.txt
+seed.template.txt              # ships; {{CREATOR}}/{{DATE}} filled by setup.sh
+self_model.template.json       # ships; filled by setup.sh
+setup.sh                       # first-run setup (identity, venv, CLI symlink)
+setup.py                       # pip-installable package
+requirements.txt               # pinned deps (setup.py has loose bounds)
 vex_daemon/
+  __init__.py
   config.py         # single source of truth for paths
   daemon.py         # FastAPI app + endpoints
-  auth.py           # bearer-token gate
-  seed_kernel.py    # identity load + integrity
+  auth.py           # bearer-token gate + body-size guard
+  seed_kernel.py    # identity load + append-only integrity
   self_model.py     # capability model
   heartbeat.py      # background tick loop
   metacognition.py  # introspection

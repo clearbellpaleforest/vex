@@ -4,6 +4,11 @@ __pycache__/
 *.pyc
 .DS_Store
 
+# ── Python build artifacts ──
+build/
+dist/
+*.egg-info/
+
 # ── Databases ──
 *.db
 *.db-journal
