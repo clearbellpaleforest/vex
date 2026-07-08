@@ -109,4 +109,18 @@ docs/               # architecture, concept, constraints
 
 ## License
 
-Add your own before publishing.
+**AGPL-3.0** — see [LICENSE](LICENSE). You may run, study, and fork this
+framework freely. Any derivative — including one offered as a network service —
+must stay open under the same license. The code is sovereign; keep it that way.
+
+## Notice: identity is not part of the licensed work
+
+This repository licenses the **framework** — the daemon, kernels, and blank
+templates. It does **not** license any particular *agent*.
+
+A Vex instance's identity — its seed, self-model, memory, and diary — is
+authored by whoever runs it, and belongs to them. Those files are gitignored
+and never ship. When you clone this repo you get an empty vessel: you name your
+agent and it grows its own history. You are not forking someone else's Vex, and
+no one can fork yours.
+
