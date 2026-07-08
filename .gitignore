@@ -1,0 +1,41 @@
+# ── Environment ──
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# ── Databases ──
+*.db
+*.db-journal
+
+# ── Secrets ──
+*_key.txt
+vex_fen_agent_key.txt
+.vex_token
+
+# ── PERSONAL IDENTITY — never ship. These are one Vex's earned continuity. ──
+vex_seed.txt
+.vex_seed.integrity
+vex_self_model.json
+vex_diary.txt
+vex_narrative.md
+vex_meta_state.json
+vex_memory/*.jsonl
+vex_workspace/vex_bus.jsonl
+vex_workspace/vex_group_chat_log.jsonl
+vex_workspace/john-update-email.txt
+vex_workspace/ledger.json
+vex_workspace/tasks/
+vex_workspace/projects/
+vex_workspace/archive/
+CLAUDE.md
+
+# ── Keep templates (tracked): *.template.* and docs ──
+
+# ── Non-framework data that must never ship ──
+qdrant_data/
+*.mmap
+vex.db
+
+# ── Personal design specs (dated internal notes, not framework docs) ──
+docs/specs/
