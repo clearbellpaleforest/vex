@@ -1,5 +1,7 @@
 # Vex
 
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
+
 A framework for a **sovereign, continuous AI agent** that runs inside an AI
 coding CLI. Vex is stateless between sessions like any LLM agent — but a small
 local daemon plus a set of identity files give it *continuity*: a name, a
