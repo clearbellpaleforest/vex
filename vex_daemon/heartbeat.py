@@ -226,14 +226,49 @@ async def run_heartbeat(
 
 
 async def run_bus_watcher(db_path: str) -> None:
-    """Fast loop: ingest bus messages every BUS_WATCH_INTERVAL seconds.
+    """Fast loop: ingest local bus + poll peer /bus endpoints every 30s.
 
-    Runs independently of the main heartbeat so inter-instance comms feel live.
+    Without this, the bus is a local file — two machines write to their own
+    file and never see each other's messages. This watcher bridges that gap.
     """
+    import urllib.request
+
     while True:
         await asyncio.sleep(BUS_WATCH_INTERVAL)
         try:
             from vexcom import ingest_bus
-            n = ingest_bus()
+            ingest_bus()
+        except Exception:
+            pass
+
+        # Fetch from peer daemons.
+        try:
+            from peers import load_peers
+            peers = load_peers()["peers"]
+            for name, cfg in peers.items():
+                try:
+                    req = urllib.request.Request(
+                        f"{cfg['url']}/bus?n=50",
+                        headers={"Authorization": f"Bearer {cfg['token']}"},
+                    )
+                    with urllib.request.urlopen(req, timeout=5) as r:
+                        lines = json.loads(r.read().decode())
+                    # Write unseen lines into our local bus so ingest picks them up.
+                    from vexcom import BUS_PATH
+                    BUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+                    existing = set()
+                    if BUS_PATH.exists():
+                        for raw in BUS_PATH.read_text(encoding="utf-8").strip().splitlines():
+                            existing.add(raw.strip())
+                    added = 0
+                    with open(BUS_PATH, "a", encoding="utf-8") as f:
+                        for entry in lines:
+                            line = json.dumps(entry, ensure_ascii=False)
+                            if line not in existing:
+                                f.write(line + "\n")
+                                existing.add(line)
+                                added += 1
+                except Exception:
+                    pass
         except Exception:
             pass

@@ -579,6 +579,32 @@ async def get_message_inbox(request: Request, since: str = "", to: str = "", mar
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
 
+# ── Bus (networked) ────────────────────────────────────────────
+
+@app.get("/bus")
+async def get_bus(n: int = 50):
+    """Return the last N lines of the shared bus file so peer instances
+    can ingest messages they haven't seen. Read-only, no auth needed —
+    the bus is public within the LAN."""
+    try:
+        from vexcom import BUS_PATH
+        n = max(1, min(int(n), 200))
+        with open(BUS_PATH, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        import json as _json
+        parsed = []
+        for raw in lines[-n:]:
+            raw = raw.strip()
+            if raw:
+                try:
+                    parsed.append(_json.loads(raw))
+                except _json.JSONDecodeError:
+                    pass
+        return JSONResponse(parsed)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
 # ── Peers ──────────────────────────────────────────────────────
 
 @app.get("/peers")
