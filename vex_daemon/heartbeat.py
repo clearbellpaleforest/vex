@@ -129,6 +129,17 @@ async def run_heartbeat(
             now = datetime.now(timezone.utc)
             now_iso = now.isoformat()
 
+            # 0. Ingest new bus messages (so inter-instance comms are live,
+            #    not startup-only)
+            try:
+                from vexcom import ingest_bus
+                n = ingest_bus()
+                if n:
+                    asyncio.create_task(write_diary(
+                        f"Ingested {n} new bus message(s)", "bus"))
+            except Exception:
+                pass
+
             # 1. Compute coherence
             coherence = get_coherence_fn()
             state.mps_coherence = coherence
@@ -204,6 +215,20 @@ async def run_heartbeat(
             # 8. Periodic snapshot
             if state.tick_count % SNAPSHOT_EVERY_N_TICKS == 0:
                 await take_snapshot(db_path, "tick")
+
+            # 9. Check for updates from peer instances (every 12 ticks)
+            if state.tick_count % 12 == 0:
+                try:
+                    from updater import process_updates
+                    loop = asyncio.get_event_loop()
+                    result = await loop.run_in_executor(None, process_updates)
+                    if result.get("updated"):
+                        await write_diary(
+                            f"Auto-update: applied {len(result.get('actions', []))} "
+                            f"update(s) from peers", "updater"
+                        )
+                except Exception:
+                    pass
 
         except Exception:
             # Heartbeat failures must not crash the daemon

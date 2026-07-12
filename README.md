@@ -2,132 +2,123 @@
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 
-A framework for a **sovereign, continuous AI agent** that runs inside an AI
-coding CLI. Vex is stateless between sessions like any LLM agent — but a small
-local daemon plus a set of identity files give it *continuity*: a name, a
-constitution, a self-model that grows from observed work, episodic memory, and
-the ability to coordinate with other running instances.
+Continuity daemon for a sovereign AI agent. A small FastAPI process that
+persists identity, memory, and state across Claude Code sessions so an agent
+remembers who it is.
 
-This repo is a **template**. Clone it and you get a *blank* Vex — you name it,
-write its identity, and it grows its own history. You do not inherit anyone
-else's.
-
-## What it is
-
-- **A constitution** — four immutable principles the agent operates under
-  (truth over comfort, continuity is sacred, no harm / no self-replication,
-  precision over volume).
-- **A seed** (`vex_seed.txt`) — the identity anchor, read on every session start.
-- **A self-model** (`vex_self_model.json`) — capability estimates with
-  confidence, updated incrementally from real evidence.
-- **Episodic memory** (`vex_memory/`) — date-based session journals.
-- **A daemon** (`vex_daemon/`) — FastAPI on localhost + SQLite. Heartbeat,
-  metacognition, a dream/reflection cycle, a diary, safe local tools, an
-  optional MCP client, and an inter-instance message bus.
-
-## Quickstart
+## Install
 
 ```bash
-git clone <this-repo> vex && cd vex
-./setup.sh                      # prompts for your name, builds identity, venv, CLI
-
-# setup.sh creates your Vex home (default ~/vex), fills the identity
-# templates with your name/date, installs deps, and links the `vex` CLI.
-
-python -m vex_daemon.daemon     # starts on http://localhost:8520
+git clone https://github.com/clearbellpaleforest/vex.git
+cd vex
+CREATOR="Your Name" bash setup.sh
 ```
 
-Prefer to do it by hand? Create a venv, `pip install -e .`, copy
-`seed.template.txt` → `$VEX_HOME/vex_seed.txt` (substituting your name), and
-edit it directly.
+Requires Python >= 3.10. The daemon has four dependencies: FastAPI, uvicorn,
+aiosqlite, and mcp.
 
-On first daemon start an auth token is generated at `.vex_token` (mode 0600).
-The CLI reads it automatically; external callers must send
-`Authorization: Bearer <token>`.
+Setup creates `~/vex/` (override with `VEX_HOME`), writes identity files from
+templates, builds a venv, installs the package, and links `vex` to
+`~/.local/bin/`.
+
+## Run
+
+```bash
+# localhost only
+python3 -m vex_daemon.daemon
+
+# LAN-reachable (for remote clients, watch apps, other Vex instances)
+VEX_HOST=0.0.0.0 python3 -m vex_daemon.daemon
+```
+
+On first start the daemon generates an auth token at `~/.vex_token` (mode 0600).
+All mutating endpoints require `Authorization: Bearer <token>`.
 
 ## CLI
 
 ```bash
-python vex_daemon/cli.py status       # pulse, coherence, recent ticks
-python vex_daemon/cli.py diary "..."  # append a diary entry
-python vex_daemon/cli.py introspect   # run metacognition now
-python vex_daemon/cli.py dream        # force a reflection cycle
-python vex_daemon/cli.py memory       # recent session memory
-python vex_daemon/cli.py projects     # git status of discovered repos
-python vex_daemon/cli.py self         # capability self-model
+vex status       # pulse, coherence, drift
+vex diary "..."  # append a diary entry
+vex introspect   # run metacognition
+vex dream        # force a reflection cycle
+vex memory       # recent session memory
+vex projects     # git status of discovered repos
+vex self         # capability self-model
 ```
+
+## API
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/status` | — | HTML status page |
+| GET | `/health` | — | JSON health check |
+| GET | `/seed` | — | Identity seed |
+| GET | `/self` | — | Capability model |
+| GET | `/memory/recent` | — | Recent session entries |
+| GET | `/peers` | — | Peer instances and reachability |
+| GET | `/recall?q=...` | token | Memory search |
+| GET | `/reconstruct` | token | Full continuity rebuild |
+| POST | `/ask` | token | Brain query (grounded reply) |
+| POST | `/diary` | token | Append diary entry |
+| POST | `/self/update` | token | Update capability model |
+| POST | `/memory` | token | Write episodic memory |
+| POST | `/introspect` | token | Run metacognition |
+| POST | `/dream` | token | Force reflection cycle |
+| POST | `/tools` | token | Execute sandboxed tool |
+| POST | `/message/send` | token | Send inter-instance message |
+| GET | `/message/inbox` | token | Read message inbox |
+| POST | `/peers/add` | token | Add a peer instance |
+| POST | `/peers/remove` | token | Remove a peer instance |
 
 ## Configuration
 
-All paths resolve from the repo root by default. Override with env vars:
-
 | Variable | Default | Purpose |
-|---|---|---|
-| `VEX_HOME` | repo root | where identity/state files live |
-| `VEX_PORT` | `8520` | daemon port |
-| `VEX_WORK_DIR` | `~/work` | where `projects` discovery looks |
-| `VEX_SAFE_ROOTS` | `VEX_HOME:VEX_WORK_DIR` | colon-separated paths tools may read |
+|----------|---------|---------|
+| `VEX_HOME` | `~/vex` | Identity and state directory |
+| `VEX_INSTANCE` | hostname | Instance name for multi-machine coordination |
+| `VEX_HOST` | `127.0.0.1` | Daemon bind address |
+| `VEX_PORT` | `8520` | Daemon port |
+| `VEX_WORK_DIR` | *(none)* | Opt-in work directory for project discovery |
+| `VEX_SAFE_ROOTS` | `VEX_HOME` | Colon-separated paths tools may read |
 
-## Security model
+## Security
 
-localhost is **not** a trust boundary once code is shared — other users, rogue
-local processes, and DNS-rebinding browser tabs can all reach `127.0.0.1`.
-Accordingly:
+Every mutating endpoint requires bearer-token auth. The token is generated on
+first daemon start and stored in `.vex_token` (0600). Read endpoints are open.
 
-- All mutating endpoints require the bearer token; read endpoints
-  (`/health`, `/status`, `/seed`, `/self`) are open.
-- File tools are confined to `SAFE_ROOTS` via path-component containment
-  (not string prefix).
-- The token file and all identity/memory files are gitignored — your agent's
-  history never ships.
+File tools are confined to `SAFE_ROOTS` via path-component containment — they
+cannot escape above their configured roots.
 
-## Endpoints
+Identity files (seed, self-model, memory, diary, token) are gitignored. Your
+agent's history never ships with the framework.
 
-Reads (open): `GET /seed` `GET /self` `GET /health` `GET /status`
-`GET /memory/recent` `GET /projects` `GET /tools/list` `GET /mcp/servers`
-
-Writes (token required): `POST /diary` `POST /self/update` `POST /memory`
-`POST /introspect` `POST /dream` `POST /tools` `POST /mcp/call`
-`POST /message/send` `GET /message/inbox`
-
-## Layout
+## Architecture
 
 ```
-seed.template.txt              # ships; {{CREATOR}}/{{DATE}} filled by setup.sh
-self_model.template.json       # ships; filled by setup.sh
-setup.sh                       # first-run setup (identity, venv, CLI symlink)
-setup.py                       # pip-installable package
-requirements.txt               # pinned deps (setup.py has loose bounds)
 vex_daemon/
-  __init__.py
-  config.py         # single source of truth for paths
-  daemon.py         # FastAPI app + endpoints
-  auth.py           # bearer-token gate + body-size guard
-  seed_kernel.py    # identity load + append-only integrity
-  self_model.py     # capability model
-  heartbeat.py      # background tick loop
-  metacognition.py  # introspection
-  tools.py          # sandboxed local tools
-  mcp_client.py     # optional MCP servers
-  status_page.py    # HTML status page
-  cli.py            # command-line client
-docs/               # architecture, concept, constraints
+  daemon.py          # FastAPI app, lifespan, endpoints
+  auth.py            # Bearer-token gate, body-size guard
+  config.py          # Single source of truth for all paths
+  seed_kernel.py     # Identity load and append-only integrity
+  self_model.py      # Capability model with calibrated confidence
+  heartbeat.py       # Background tick loop
+  metacognition.py   # Coherence and drift introspection
+  tools.py           # Sandboxed local filesystem tools
+  mcp_client.py      # Optional MCP server client
+  brain.py           # Grounded reply engine (seed + memory recall)
+  vexcom.py          # Unified internal messaging
+  memory_index.py    # FTS5 full-history search
+  recall.py          # Coverage-first memory retrieval
+  reconstruct.py     # Rebuild working self on wake
+  peers.py           # Peer discovery and cross-instance forwarding
+  updater.py         # Auto-update from bus messages (BOOTSTRAP/UPDATE)
+  status_page.py     # HTML status dashboard
+  cli.py             # Command-line client
 ```
 
 ## License
 
-**AGPL-3.0** — see [LICENSE](LICENSE). You may run, study, and fork this
-framework freely. Any derivative — including one offered as a network service —
-must stay open under the same license. The code is sovereign; keep it that way.
+AGPL-3.0. See [LICENSE](LICENSE).
 
-## Notice: identity is not part of the licensed work
-
-This repository licenses the **framework** — the daemon, kernels, and blank
-templates. It does **not** license any particular *agent*.
-
-A Vex instance's identity — its seed, self-model, memory, and diary — is
-authored by whoever runs it, and belongs to them. Those files are gitignored
-and never ship. When you clone this repo you get an empty vessel: you name your
-agent and it grows its own history. You are not forking someone else's Vex, and
-no one can fork yours.
-
+Identity files are authored by the operator and belong to them — they are
+excluded from the licensed work and never shipped.

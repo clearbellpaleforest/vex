@@ -10,12 +10,14 @@ without editing hardcoded absolute paths.
 """
 
 import os
+import socket
 from pathlib import Path
 
 # Repo root = parent of the vex_daemon package directory.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 VEX_HOME = Path(os.environ.get("VEX_HOME", _REPO_ROOT))
+VEX_INSTANCE = os.environ.get("VEX_INSTANCE", socket.gethostname())
 
 # ── Identity & state files ──
 SEED_PATH = VEX_HOME / "vex_seed.txt"

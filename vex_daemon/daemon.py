@@ -137,6 +137,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"NOTE: memory index bootstrap failed: {e}", file=sys.stderr)
 
+    # Process any pending updates from peer instances (BOOTSTRAP/UPDATE bus messages).
+    try:
+        from updater import process_updates
+        result = process_updates()
+        if result.get("updated"):
+            print(f"UPDATER: applied {len(result.get('actions', []))} update(s)", file=sys.stderr)
+    except Exception as e:
+        print(f"NOTE: updater check failed: {e}", file=sys.stderr)
+
     # Verify seed. A missing seed is a fresh clone (expected). An integrity
     # breach is tampering — refuse to serve a compromised identity.
     try:
@@ -567,15 +576,67 @@ async def get_message_inbox(request: Request, since: str = "", to: str = "", mar
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
 
+# ── Peers ──────────────────────────────────────────────────────
+
+@app.get("/peers")
+async def get_peers():
+    """List configured peer instances with reachability."""
+    from peers import peers_summary
+    return JSONResponse(peers_summary())
+
+
+@app.post("/peers/add")
+async def post_peers_add(request: Request):
+    """Add a peer instance."""
+    if (err := check_auth(request)):
+        return err
+    try:
+        body, err = await read_json_limited(request)
+        if err:
+            return err
+        from peers import add_peer
+        result = add_peer(body["name"], body["url"], body["token"])
+        return JSONResponse(result)
+    except KeyError:
+        return JSONResponse(
+            {"ok": False, "error": "name, url, and token are required"}, status_code=400
+        )
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/peers/remove")
+async def post_peers_remove(request: Request):
+    """Remove a peer instance."""
+    if (err := check_auth(request)):
+        return err
+    try:
+        body, err = await read_json_limited(request)
+        if err:
+            return err
+        from peers import remove_peer
+        result = remove_peer(body["name"])
+        return JSONResponse(result)
+    except KeyError:
+        return JSONResponse(
+            {"ok": False, "error": "name is required"}, status_code=400
+        )
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
 # ── Entry point ────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import uvicorn
+    from config import VEX_INSTANCE
 
-    print(f"Starting Vex Daemon v{VERSION} on http://localhost:{PORT}")
+    host = os.environ.get("VEX_HOST", "127.0.0.1")
+    print(f"Vex Daemon v{VERSION} — instance: {VEX_INSTANCE}")
+    print(f"Listening on http://{host}:{PORT}")
     uvicorn.run(
         app,
-        host=os.environ.get("VEX_HOST", "127.0.0.1"),
+        host=host,
         port=PORT,
         log_level="info",
     )

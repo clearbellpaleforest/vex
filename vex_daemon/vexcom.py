@@ -16,7 +16,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 
-from config import DB_PATH, VEX_HOME
+from config import DB_PATH, VEX_HOME, VEX_INSTANCE
 from memory_index import ensure_schema
 
 BUS_PATH = VEX_HOME / "vex_workspace" / "vex_bus.jsonl"
@@ -33,7 +33,7 @@ def normalize(env: dict) -> dict:
     if mtype not in MESSAGE_TYPES:
         mtype = "message"
     return {
-        "from": env.get("from") or env.get("sender") or "vex",
+        "from": env.get("from") or env.get("sender") or f"vex@{VEX_INSTANCE}",
         "to": env.get("to") or env.get("recipient") or "broadcast",
         "type": mtype,
         "body": env.get("body", ""),

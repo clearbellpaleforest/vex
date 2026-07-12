@@ -9,7 +9,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config import VEX_HOME, DIARY_PATH, MEMORY_DIR
+from config import VEX_HOME, DIARY_PATH, MEMORY_DIR, VEX_INSTANCE
 
 _CSS = """
 body {
@@ -117,6 +117,7 @@ def render(
 <h2>Identity</h2>
 <div class="block">
     <div><span class="label">Name:</span> <span class="value">{seed_summary.get('name', 'Vex')}</span></div>
+    <div><span class="label">Instance:</span> <span class="value">{VEX_INSTANCE}</span></div>
     <div><span class="label">Created:</span> <span class="value">{seed_summary.get('created', 'unknown')}</span></div>
     <div><span class="label">Principles intact:</span> <span class="{'ok' if seed_summary.get('principles_intact') else 'warn'}">{'yes' if seed_summary.get('principles_intact') else 'NO — CHECK SEED'}</span></div>
 </div>
