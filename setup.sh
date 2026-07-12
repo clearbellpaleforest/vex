@@ -65,7 +65,15 @@ fi
 
 if [ ! -d "$VENV_DIR" ]; then
     echo "Creating virtual environment..."
-    python3 -m venv "$VENV_DIR"
+    if python3 -m venv "$VENV_DIR" 2>/dev/null; then
+        echo "venv created with pip."
+    else
+        echo "venv failed (likely missing ensurepip). Falling back to --without-pip + bootstrap..."
+        python3 -m venv --without-pip "$VENV_DIR"
+        python3 -c "import urllib.request; urllib.request.urlretrieve('https://bootstrap.pypa.io/get-pip.py', '/tmp/get-pip.py')"
+        "$VENV_DIR/bin/python3" /tmp/get-pip.py
+        echo "pip bootstrapped."
+    fi
 fi
 
 "$VENV_DIR/bin/pip" install -q "$SCRIPT_DIR/"
@@ -85,7 +93,15 @@ echo ""
 echo "============================================"
 echo " Vex is ready."
 echo ""
-echo " Start the daemon:  cd $SCRIPT_DIR && $VENV_DIR/bin/python -m vex_daemon.daemon"
+echo " Start the daemon on LAN (reachable from other machines):"
+echo "  cd $SCRIPT_DIR && VEX_HOST=0.0.0.0 $VENV_DIR/bin/python -m vex_daemon.daemon"
+echo ""
+echo " Start the daemon on localhost only:"
+echo "  cd $SCRIPT_DIR && $VENV_DIR/bin/python -m vex_daemon.daemon"
+echo ""
+echo " The daemon token (for remote clients):"
+echo "  cat $VEX_HOME/.vex_token"
+echo ""
 echo " Check status:      vex status"
 echo " Read the docs:     $SCRIPT_DIR/README.md"
 echo "============================================"

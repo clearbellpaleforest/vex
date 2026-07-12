@@ -169,6 +169,9 @@ def discover_projects() -> dict:
     work = WORK_DIR
     projects = []
 
+    if work is None:
+        return {"ok": False, "error": "work dir not configured; set VEX_WORK_DIR to opt in. "
+                "Vex stays out of ~/work by default."}
     if not work.exists():
         return {"ok": False, "error": f"work dir not found: {work}"}
 

@@ -38,6 +38,11 @@ from auth import check_auth, read_json_limited
 from config import VEX_HOME, DB_PATH as _DB_PATH
 import tools
 import mcp_client
+import recall as recall_mod
+import reconstruct as reconstruct_mod
+import vexcom
+import brain
+from memory_index import build_index
 
 DB_PATH = str(_DB_PATH)
 SELF_SNAPSHOTS_DIR = VEX_HOME
@@ -123,6 +128,14 @@ async def lifespan(app: FastAPI):
     """Startup: init DB, verify seed. Shutdown: clean exit."""
     # Startup
     await init_db()
+
+    # Bootstrap the memory index (whole-history recall). VexCom is Aldous<->Vex
+    # and Vex self-updates only — the multi-instance work bus is NOT ingested.
+    try:
+        build_index()
+        vexcom.reindex_messages()
+    except Exception as e:
+        print(f"NOTE: memory index bootstrap failed: {e}", file=sys.stderr)
 
     # Verify seed. A missing seed is a fresh clone (expected). An integrity
     # breach is tampering — refuse to serve a compromised identity.
@@ -411,6 +424,47 @@ async def get_memory_recent():
     return JSONResponse(sessions[:10])
 
 
+@app.get("/recall")
+async def get_recall(q: str = "", k: int = 5):
+    """Query the whole memory index (sessions + comms), relevance-first."""
+    k = max(1, min(int(k), 20))
+    try:
+        return JSONResponse(recall_mod.recall(q, k))
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/reconstruct")
+async def get_reconstruct():
+    """Rebuild working self on wake: identity + recent + summaries + continuity_index."""
+    try:
+        return JSONResponse(reconstruct_mod.reconstruct())
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/ask")
+async def post_ask(request: Request):
+    """Ask Vex — text in, Vex's grounded reply out (local brain). Runs off-loop."""
+    if (err := check_auth(request)):
+        return err
+    try:
+        body, err = await read_json_limited(request)
+        if err:
+            return err
+        message = (body.get("message") or "").strip()
+        if not message:
+            return JSONResponse(
+                {"ok": False, "error": "message is required"}, status_code=400
+            )
+        history = body.get("history")
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, brain.ask, message, history)
+        return JSONResponse({"ok": True, **result})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
 @app.post("/tools")
 async def post_tools(request: Request):
     """Execute a tool — read files, check git, list directories."""
@@ -491,64 +545,24 @@ async def get_tools_list():
 
 @app.post("/message/send")
 async def post_message_send(request: Request):
-    """Send a message to another Vex instance or broadcast."""
+    """Send a message via VexCom: authoritative SQLite + bus mirror + memory index."""
     if (err := check_auth(request)):
         return err
     try:
         body = await request.json()
-        recipient = body.get("to", "broadcast")
-        msg_body = body.get("body", "")
-        if not msg_body:
-            return JSONResponse(
-                {"ok": False, "error": "body is required"}, status_code=400
-            )
-        session_id = body.get("session_id", "")
-        msg_type = body.get("type", "message")
-        sender = body.get("from", "vex")
-
-        now = datetime.now(timezone.utc).isoformat()
-        async with aiosqlite.connect(DB_PATH) as db:
-            cursor = await db.execute(
-                "INSERT INTO messages (created_at, sender, recipient, body, session_id, msg_type) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (now, sender, recipient, msg_body, session_id, msg_type),
-            )
-            await db.commit()
-
-        return JSONResponse({"ok": True, "sent": True, "id": cursor.lastrowid})
+        result = vexcom.send(body)
+        return JSONResponse(result, status_code=200 if result.get("ok") else 400)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
 
 @app.get("/message/inbox")
-async def get_message_inbox(request: Request, since: str = "", mark_read: bool = True):
-    """Return messages, optionally since a timestamp. Marks as read by default."""
+async def get_message_inbox(request: Request, since: str = "", to: str = "", mark_read: bool = True):
+    """Return messages via VexCom (unified store). Marks as read by default."""
     if (err := check_auth(request)):
         return err
     try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            if since:
-                cursor = await db.execute(
-                    "SELECT * FROM messages WHERE created_at > ? ORDER BY id ASC LIMIT 50",
-                    (since,),
-                )
-            else:
-                cursor = await db.execute(
-                    "SELECT * FROM messages WHERE read = 0 ORDER BY id ASC LIMIT 50"
-                )
-            rows = await cursor.fetchall()
-
-            if mark_read and rows:
-                ids = [r["id"] for r in rows]
-                placeholders = ",".join("?" * len(ids))
-                await db.execute(
-                    f"UPDATE messages SET read = 1 WHERE id IN ({placeholders})",
-                    ids,
-                )
-                await db.commit()
-
-            return JSONResponse([dict(r) for r in rows])
+        return JSONResponse(vexcom.inbox(since=since, to=to, mark_read=mark_read))
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
@@ -561,7 +575,7 @@ if __name__ == "__main__":
     print(f"Starting Vex Daemon v{VERSION} on http://localhost:{PORT}")
     uvicorn.run(
         app,
-        host="127.0.0.1",
+        host=os.environ.get("VEX_HOST", "127.0.0.1"),
         port=PORT,
         log_level="info",
     )

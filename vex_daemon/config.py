@@ -26,11 +26,15 @@ MEMORY_DIR = VEX_HOME / "vex_memory"
 DB_PATH = VEX_HOME / "vex.db"
 TOKEN_PATH = VEX_HOME / ".vex_token"
 MCP_CONFIG_PATH = VEX_HOME / "vex_mcp_config.json"
+BRAIN_CONFIG_PATH = VEX_HOME / ".vex_brain.json"
 
 # ── Filesystem roots the tools may touch ──
-# Override with $VEX_SAFE_ROOTS (colon-separated) for other machines.
+# Vex is play; employer/client work lives in ~/work and MUST stay out of Vex by
+# default (a Vex session doing work once blew the context window and breached the
+# play/work separation). Work access is opt-in only: set VEX_WORK_DIR to a path,
+# or override the whole set with $VEX_SAFE_ROOTS (colon-separated).
 _default_roots = [str(VEX_HOME)]
-_work = os.environ.get("VEX_WORK_DIR", str(Path.home() / "work"))
+_work = os.environ.get("VEX_WORK_DIR", "")  # empty unless explicitly opted in
 if _work:
     _default_roots.append(_work)
 
@@ -40,4 +44,4 @@ SAFE_ROOTS = [
     ).split(":") if p
 ]
 
-WORK_DIR = Path(_work)
+WORK_DIR = Path(_work) if _work else None

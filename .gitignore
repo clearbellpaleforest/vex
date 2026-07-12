@@ -44,3 +44,4 @@ vex.db
 
 # ── Personal design specs (dated internal notes, not framework docs) ──
 docs/specs/
+.vex_brain.json
