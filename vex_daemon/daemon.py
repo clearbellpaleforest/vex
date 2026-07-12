@@ -31,7 +31,7 @@ from self_model import (
     compute_mps_coherence,
     SelfModelError,
 )
-from heartbeat import HeartbeatState, run_heartbeat, write_diary, take_snapshot
+from heartbeat import HeartbeatState, run_bus_watcher, run_heartbeat, write_diary, take_snapshot
 from metacognition import introspect, load_meta_state
 from status_page import render
 from auth import check_auth, read_json_limited
@@ -184,6 +184,9 @@ async def lifespan(app: FastAPI):
 
     heartbeat_task = asyncio.create_task(
         run_heartbeat(state, DB_PATH, get_coherence, dream_fn=dream_callback)
+    )
+    bus_watcher_task = asyncio.create_task(
+        run_bus_watcher(DB_PATH)
     )
 
     await write_diary("Daemon started.", "system")

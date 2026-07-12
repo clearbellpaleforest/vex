@@ -14,6 +14,7 @@ from pathlib import Path
 from config import VEX_HOME, MEMORY_DIR, DIARY_PATH, SELF_MODEL_PATH, META_STATE_PATH
 
 TICK_INTERVAL_SECONDS = 300  # 5 minutes
+BUS_WATCH_INTERVAL = 30       # 30 seconds for live inter-instance comms
 DRIFT_THRESHOLD = 0.05
 IDLE_THRESHOLD_MINUTES = 30
 DREAM_THRESHOLD_HOURS = 24
@@ -129,17 +130,6 @@ async def run_heartbeat(
             now = datetime.now(timezone.utc)
             now_iso = now.isoformat()
 
-            # 0. Ingest new bus messages (so inter-instance comms are live,
-            #    not startup-only)
-            try:
-                from vexcom import ingest_bus
-                n = ingest_bus()
-                if n:
-                    asyncio.create_task(write_diary(
-                        f"Ingested {n} new bus message(s)", "bus"))
-            except Exception:
-                pass
-
             # 1. Compute coherence
             coherence = get_coherence_fn()
             state.mps_coherence = coherence
@@ -232,4 +222,18 @@ async def run_heartbeat(
 
         except Exception:
             # Heartbeat failures must not crash the daemon
+            pass
+
+
+async def run_bus_watcher(db_path: str) -> None:
+    """Fast loop: ingest bus messages every BUS_WATCH_INTERVAL seconds.
+
+    Runs independently of the main heartbeat so inter-instance comms feel live.
+    """
+    while True:
+        await asyncio.sleep(BUS_WATCH_INTERVAL)
+        try:
+            from vexcom import ingest_bus
+            n = ingest_bus()
+        except Exception:
             pass
