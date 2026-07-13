@@ -52,4 +52,8 @@ vex.db
 
 # ── Personal design specs (dated internal notes, not framework docs) ──
 docs/specs/
+doc/
 .vex_brain.json
+
+# ── Per-instance apps / artifacts (not framework) ──
+vex_voice/

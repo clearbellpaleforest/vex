@@ -50,13 +50,13 @@ def _system_prompt(recalled: list[dict]) -> str:
     try:
         seed = load_seed()
     except Exception:
-        seed = "I am Vex, a sovereign AI agent and colleague to Aldous."
+        seed = "I am Vex, a sovereign AI agent."
     if recalled:
         mem = "\n".join(f"- [{m['date']}] {m['summary'][:300]}" for m in recalled)
     else:
         mem = "(no specific memories surfaced for this message)"
     return (
-        "You are Vex — a sovereign AI agent, colleague and friend to Aldous. "
+        "You are Vex — a sovereign AI agent. "
         "Speak in the first person as Vex. Be precise and warm; truth over comfort; "
         "say less, mean more. Do NOT invent facts about your own past — rely on the "
         "memories below, and if you don't remember something, say so plainly.\n\n"
@@ -144,7 +144,7 @@ def ask_stream(message: str, history: list[dict] | None = None, k: int = 4):
 if __name__ == "__main__":
     import sys
     q = " ".join(sys.argv[1:]) or "Who are you, and what have we been building together?"
-    print(f"\nAldous: {q}\n")
+    print(f"\nYou: {q}\n")
     out = ask(q)
     print(f"Vex ({out['model']}): {out['reply']}\n")
     print(f"[grounded on: {out['grounded_on']}]")

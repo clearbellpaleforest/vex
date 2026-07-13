@@ -1,7 +1,7 @@
 """
 Vex reconstruction — one entry point to rebuild working self on wake.
 
-Layered and graceful (mined from Fen, stripped to a single function):
+Layered and graceful, stripped to a single function:
   full   : identity + recent raw episodes + all consolidated summaries
   recent : identity + recent raw episodes (no summaries yet)
   seed   : identity only (episodic index empty)
