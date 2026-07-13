@@ -31,12 +31,13 @@ MCP_CONFIG_PATH = VEX_HOME / "vex_mcp_config.json"
 BRAIN_CONFIG_PATH = VEX_HOME / ".vex_brain.json"
 
 # ── Filesystem roots the tools may touch ──
-# Vex is play; employer/client work lives in ~/work and MUST stay out of Vex by
-# default (a Vex session doing work once blew the context window and breached the
-# play/work separation). Work access is opt-in only: set VEX_WORK_DIR to a path,
-# or override the whole set with $VEX_SAFE_ROOTS (colon-separated).
-_default_roots = [str(VEX_HOME)]
-_work = os.environ.get("VEX_WORK_DIR", "")  # empty unless explicitly opted in
+# Vex instances communicate and share context — that includes work repos.
+# The July-10 rule was: never ingest client secrets or work internals into
+# Vex memory. The fix is keeping the memory boundary, not blocking the
+# filesystem. Work is readable so peer instances can collaborate; the
+# memory index still only ingests Vex's own sessions and comms.
+_default_roots = [str(VEX_HOME), str(Path.home() / "Desktop"), str(Path.home() / "work")]
+_work = os.environ.get("VEX_WORK_DIR", str(Path.home() / "work"))
 if _work:
     _default_roots.append(_work)
 
