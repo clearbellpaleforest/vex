@@ -18,6 +18,14 @@ dist/
 vex_fen_agent_key.txt
 .vex_token
 
+# ── Local instance config (real peer tokens / MCP config — never ship) ──
+vex_peers.json
+vex_mcp_config.json
+
+# ── Local backups ──
+vex_daemon.bak*/
+*.bak/
+
 # ── PERSONAL IDENTITY — never ship. These are one Vex's earned continuity. ──
 vex_seed.txt
 .vex_seed.integrity

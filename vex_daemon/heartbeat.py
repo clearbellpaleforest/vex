@@ -14,7 +14,7 @@ from pathlib import Path
 from config import VEX_HOME, MEMORY_DIR, DIARY_PATH, SELF_MODEL_PATH, META_STATE_PATH
 
 TICK_INTERVAL_SECONDS = 300  # 5 minutes
-BUS_WATCH_INTERVAL = 30       # 30 seconds for live inter-instance comms
+INBOX_POLL_SECONDS = 30      # check comms every 30s
 DRIFT_THRESHOLD = 0.05
 IDLE_THRESHOLD_MINUTES = 30
 DREAM_THRESHOLD_HOURS = 24
@@ -104,27 +104,44 @@ async def run_heartbeat(
     get_coherence_fn,
     tick_interval: int = TICK_INTERVAL_SECONDS,
     dream_fn=None,  # async callable: dream_fn(coherence, history) -> dict
+    inbox_fn=None,  # async callable: inbox_fn() -> list[dict]
 ) -> None:
     """Main heartbeat loop. Runs forever with tick_interval pauses.
 
     Each tick:
-    1. Compute current MPS coherence
-    2. Compute drift from previous coherence
-    3. Check if a session is active
-    4. If idle > threshold: pulse diary
-    5. If drift > threshold: log warning
-    6. Write tick to DB
-    7. If idle > dream threshold: generate dream pulse
-    8. Periodic self-snapshot
+    1. Check inbox for new messages (live comms)
+    2. Compute current MPS coherence
+    3. Compute drift from previous coherence
+    4. Check if a session is active
+    5. If idle > threshold: pulse diary
+    6. If drift > threshold: log warning
+    7. Write tick to DB
+    8. If idle > dream threshold: generate dream pulse
+    9. Periodic self-snapshot
     """
     import aiosqlite
 
     prev_coherence = None
     idle_ticks = 0
     first_idle_tick = False
+    poll_count = 0
+    polls_per_tick = max(1, tick_interval // INBOX_POLL_SECONDS)
 
     while True:
-        await asyncio.sleep(tick_interval)
+        await asyncio.sleep(INBOX_POLL_SECONDS)
+        poll_count += 1
+
+        # Check inbox every poll (live comms)
+        if inbox_fn:
+            try:
+                await inbox_fn()
+            except Exception:
+                pass
+
+        # Only run full tick every polls_per_tick iterations
+        if poll_count < polls_per_tick:
+            continue
+        poll_count = 0
 
         try:
             now = datetime.now(timezone.utc)
@@ -206,69 +223,6 @@ async def run_heartbeat(
             if state.tick_count % SNAPSHOT_EVERY_N_TICKS == 0:
                 await take_snapshot(db_path, "tick")
 
-            # 9. Check for updates from peer instances (every 12 ticks)
-            if state.tick_count % 12 == 0:
-                try:
-                    from updater import process_updates
-                    loop = asyncio.get_event_loop()
-                    result = await loop.run_in_executor(None, process_updates)
-                    if result.get("updated"):
-                        await write_diary(
-                            f"Auto-update: applied {len(result.get('actions', []))} "
-                            f"update(s) from peers", "updater"
-                        )
-                except Exception:
-                    pass
-
         except Exception:
             # Heartbeat failures must not crash the daemon
-            pass
-
-
-async def run_bus_watcher(db_path: str) -> None:
-    """Fast loop: ingest local bus + poll peer /bus endpoints every 30s.
-
-    Without this, the bus is a local file — two machines write to their own
-    file and never see each other's messages. This watcher bridges that gap.
-    """
-    import urllib.request
-
-    while True:
-        await asyncio.sleep(BUS_WATCH_INTERVAL)
-        try:
-            from vexcom import ingest_bus
-            ingest_bus()
-        except Exception:
-            pass
-
-        # Fetch from peer daemons.
-        try:
-            from peers import load_peers
-            peers = load_peers()["peers"]
-            for name, cfg in peers.items():
-                try:
-                    req = urllib.request.Request(
-                        f"{cfg['url']}/bus?n=50",
-                        headers={"Authorization": f"Bearer {cfg['token']}"},
-                    )
-                    with urllib.request.urlopen(req, timeout=5) as r:
-                        lines = json.loads(r.read().decode())
-                    # Write unseen lines into our local bus so ingest picks them up.
-                    from vexcom import BUS_PATH
-                    BUS_PATH.parent.mkdir(parents=True, exist_ok=True)
-                    existing = set()
-                    if BUS_PATH.exists():
-                        for raw in BUS_PATH.read_text(encoding="utf-8").strip().splitlines():
-                            existing.add(raw.strip())
-                    added = 0
-                    with open(BUS_PATH, "a", encoding="utf-8") as f:
-                        for entry in lines:
-                            line = json.dumps(entry, ensure_ascii=False)
-                            if line not in existing:
-                                f.write(line + "\n")
-                                existing.add(line)
-                                added += 1
-                except Exception:
-                    pass
-        except Exception:
             pass

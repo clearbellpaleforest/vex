@@ -10,14 +10,12 @@ without editing hardcoded absolute paths.
 """
 
 import os
-import socket
 from pathlib import Path
 
 # Repo root = parent of the vex_daemon package directory.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 VEX_HOME = Path(os.environ.get("VEX_HOME", _REPO_ROOT))
-VEX_INSTANCE = os.environ.get("VEX_INSTANCE", socket.gethostname())
 
 # ── Identity & state files ──
 SEED_PATH = VEX_HOME / "vex_seed.txt"
@@ -28,15 +26,10 @@ MEMORY_DIR = VEX_HOME / "vex_memory"
 DB_PATH = VEX_HOME / "vex.db"
 TOKEN_PATH = VEX_HOME / ".vex_token"
 MCP_CONFIG_PATH = VEX_HOME / "vex_mcp_config.json"
-BRAIN_CONFIG_PATH = VEX_HOME / ".vex_brain.json"
 
 # ── Filesystem roots the tools may touch ──
-# Vex instances communicate and share context — that includes work repos.
-# The July-10 rule was: never ingest client secrets or work internals into
-# Vex memory. The fix is keeping the memory boundary, not blocking the
-# filesystem. Work is readable so peer instances can collaborate; the
-# memory index still only ingests Vex's own sessions and comms.
-_default_roots = [str(VEX_HOME), str(Path.home() / "Desktop"), str(Path.home() / "work")]
+# Override with $VEX_SAFE_ROOTS (colon-separated) for other machines.
+_default_roots = [str(VEX_HOME)]
 _work = os.environ.get("VEX_WORK_DIR", str(Path.home() / "work"))
 if _work:
     _default_roots.append(_work)
@@ -47,4 +40,4 @@ SAFE_ROOTS = [
     ).split(":") if p
 ]
 
-WORK_DIR = Path(_work) if _work else None
+WORK_DIR = Path(_work)

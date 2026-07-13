@@ -31,18 +31,14 @@ from self_model import (
     compute_mps_coherence,
     SelfModelError,
 )
-from heartbeat import HeartbeatState, run_bus_watcher, run_heartbeat, write_diary, take_snapshot
+from heartbeat import HeartbeatState, run_heartbeat, write_diary, take_snapshot
 from metacognition import introspect, load_meta_state
 from status_page import render
 from auth import check_auth, read_json_limited
 from config import VEX_HOME, DB_PATH as _DB_PATH
 import tools
 import mcp_client
-import recall as recall_mod
-import reconstruct as reconstruct_mod
-import vexcom
-import brain
-from memory_index import build_index
+import peers
 
 DB_PATH = str(_DB_PATH)
 SELF_SNAPSHOTS_DIR = VEX_HOME
@@ -50,6 +46,17 @@ PORT = int(os.environ.get("VEX_PORT", "8520"))
 VERSION = "1.0.0"
 
 state = HeartbeatState()
+
+
+def get_full_name() -> str:
+    """Return this instance's two-part name: 'Vex given' or 'Vex'."""
+    try:
+        sm = seed_summary(load_seed())
+        name = sm.get("name", "Vex")
+        given = sm.get("given_name", "")
+        return f"{name} {given}".strip() if given else name
+    except Exception:
+        return "Vex"
 
 
 async def init_db() -> None:
@@ -129,23 +136,6 @@ async def lifespan(app: FastAPI):
     # Startup
     await init_db()
 
-    # Bootstrap the memory index (whole-history recall). VexCom is Aldous<->Vex
-    # and Vex self-updates only — the multi-instance work bus is NOT ingested.
-    try:
-        build_index()
-        vexcom.reindex_messages()
-    except Exception as e:
-        print(f"NOTE: memory index bootstrap failed: {e}", file=sys.stderr)
-
-    # Process any pending updates from peer instances (BOOTSTRAP/UPDATE bus messages).
-    try:
-        from updater import process_updates
-        result = process_updates()
-        if result.get("updated"):
-            print(f"UPDATER: applied {len(result.get('actions', []))} update(s)", file=sys.stderr)
-    except Exception as e:
-        print(f"NOTE: updater check failed: {e}", file=sys.stderr)
-
     # Verify seed. A missing seed is a fresh clone (expected). An integrity
     # breach is tampering — refuse to serve a compromised identity.
     try:
@@ -183,10 +173,7 @@ async def lifespan(app: FastAPI):
         return result
 
     heartbeat_task = asyncio.create_task(
-        run_heartbeat(state, DB_PATH, get_coherence, dream_fn=dream_callback)
-    )
-    bus_watcher_task = asyncio.create_task(
-        run_bus_watcher(DB_PATH)
+        run_heartbeat(state, DB_PATH, get_coherence, dream_fn=dream_callback, inbox_fn=check_inbox)
     )
 
     await write_diary("Daemon started.", "system")
@@ -269,7 +256,7 @@ async def get_status():
     try:
         sm = seed_summary(load_seed())
     except Exception:
-        sm = {"name": "Vex", "created": "unknown", "principles_intact": False}
+        sm = {"name": "Vex", "given_name": "", "created": "unknown", "principles_intact": False}
 
     try:
         mm = model_summary(load_model())
@@ -436,47 +423,6 @@ async def get_memory_recent():
     return JSONResponse(sessions[:10])
 
 
-@app.get("/recall")
-async def get_recall(q: str = "", k: int = 5):
-    """Query the whole memory index (sessions + comms), relevance-first."""
-    k = max(1, min(int(k), 20))
-    try:
-        return JSONResponse(recall_mod.recall(q, k))
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-
-
-@app.get("/reconstruct")
-async def get_reconstruct():
-    """Rebuild working self on wake: identity + recent + summaries + continuity_index."""
-    try:
-        return JSONResponse(reconstruct_mod.reconstruct())
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-
-
-@app.post("/ask")
-async def post_ask(request: Request):
-    """Ask Vex — text in, Vex's grounded reply out (local brain). Runs off-loop."""
-    if (err := check_auth(request)):
-        return err
-    try:
-        body, err = await read_json_limited(request)
-        if err:
-            return err
-        message = (body.get("message") or "").strip()
-        if not message:
-            return JSONResponse(
-                {"ok": False, "error": "message is required"}, status_code=400
-            )
-        history = body.get("history")
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, brain.ask, message, history)
-        return JSONResponse({"ok": True, **result})
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-
-
 @app.post("/tools")
 async def post_tools(request: Request):
     """Execute a tool — read files, check git, list directories."""
@@ -548,6 +494,9 @@ async def get_tools_list():
             {"name": "git_status", "description": "Git status of a repository"},
             {"name": "git_log", "description": "Recent git log entries"},
             {"name": "discover_projects", "description": "Find and report on all known git repos"},
+            {"name": "playwright_screenshot", "description": "Take a PNG screenshot of a URL"},
+            {"name": "playwright_text", "description": "Extract visible text from a web page"},
+            {"name": "playwright_check_links", "description": "Check links on a page for broken ones"},
         ],
     })
 
@@ -557,115 +506,391 @@ async def get_tools_list():
 
 @app.post("/message/send")
 async def post_message_send(request: Request):
-    """Send a message via VexCom: authoritative SQLite + bus mirror + memory index."""
+    """Send a message to another Vex instance or broadcast."""
     if (err := check_auth(request)):
         return err
     try:
         body = await request.json()
-        result = vexcom.send(body)
-        return JSONResponse(result, status_code=200 if result.get("ok") else 400)
+        recipient = body.get("to", "broadcast")
+        msg_body = body.get("body", "")
+        if not msg_body:
+            return JSONResponse(
+                {"ok": False, "error": "body is required"}, status_code=400
+            )
+        session_id = body.get("session_id", "")
+        msg_type = body.get("type", "message")
+        sender = body.get("from", get_full_name())
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        # If recipient matches a configured peer, forward it there
+        peer_config = peers.get_peer(recipient)
+        if peer_config:
+            result = peers.forward_to_peer(recipient, {
+                "from": sender,
+                "to": recipient,
+                "body": msg_body,
+                "session_id": session_id,
+                "type": msg_type,
+            })
+            if result.get("ok"):
+                # Poke the peer to check inbox immediately
+                peers.poke_peer(recipient)
+                return JSONResponse({"ok": True, "sent": True, "peer": recipient})
+            return JSONResponse(result, status_code=502)
+
+        # Otherwise write to local DB
+        async with aiosqlite.connect(DB_PATH) as db:
+            cursor = await db.execute(
+                "INSERT INTO messages (created_at, sender, recipient, body, session_id, msg_type) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (now, sender, recipient, msg_body, session_id, msg_type),
+            )
+            await db.commit()
+
+        return JSONResponse({"ok": True, "sent": True, "id": cursor.lastrowid})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
 
 @app.get("/message/inbox")
-async def get_message_inbox(request: Request, since: str = "", to: str = "", mark_read: bool = True):
-    """Return messages via VexCom (unified store). Marks as read by default."""
+async def get_message_inbox(request: Request, since: str = "", mark_read: bool = True):
+    """Return messages, optionally since a timestamp. Marks as read by default."""
     if (err := check_auth(request)):
         return err
     try:
-        return JSONResponse(vexcom.inbox(since=since, to=to, mark_read=mark_read))
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            if since:
+                cursor = await db.execute(
+                    "SELECT * FROM messages WHERE created_at > ? ORDER BY id ASC LIMIT 50",
+                    (since,),
+                )
+            else:
+                cursor = await db.execute(
+                    "SELECT * FROM messages WHERE read = 0 ORDER BY id ASC LIMIT 50"
+                )
+            rows = await cursor.fetchall()
+
+            if mark_read and rows:
+                ids = [r["id"] for r in rows]
+                placeholders = ",".join("?" * len(ids))
+                await db.execute(
+                    f"UPDATE messages SET read = 1 WHERE id IN ({placeholders})",
+                    ids,
+                )
+                await db.commit()
+
+            return JSONResponse([dict(r) for r in rows])
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
 
-# ── Bus (networked) ────────────────────────────────────────────
+# ── File serving ───────────────────────────────────────────────
 
-@app.get("/bus")
-async def get_bus(n: int = 50):
-    """Return the last N lines of the shared bus file so peer instances
-    can ingest messages they haven't seen. Read-only, no auth needed —
-    the bus is public within the LAN."""
+
+@app.get("/files")
+async def get_files(path: str = "", request: Request = None):
+    """Serve a file or directory from VEX_HOME (within SAFE_ROOTS). Requires auth."""
+    if (err := check_auth(request)):
+        return err
+
+    import tarfile
+    import io
+    from fastapi.responses import StreamingResponse
+
+    resolved = (VEX_HOME / path).resolve()
+    if not tools._is_safe_path(resolved):
+        return JSONResponse(
+            {"ok": False, "error": f"Path not in allowed roots: {path}"},
+            status_code=403,
+        )
+
+    if not resolved.exists():
+        return JSONResponse(
+            {"ok": False, "error": f"Not found: {path}"}, status_code=404
+        )
+
+    if resolved.is_file():
+        return PlainTextResponse(
+            resolved.read_text(),
+            headers={"X-Vex-Path": str(resolved.relative_to(VEX_HOME))},
+        )
+
+    # Directory — tar it
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        tar.add(resolved, arcname=resolved.name)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/gzip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{resolved.name}.tar.gz"',
+            "X-Vex-Path": str(resolved.relative_to(VEX_HOME)),
+        },
+    )
+
+
+@app.get("/export")
+async def get_export(request: Request):
+    """Export the full Vex identity + source as a plug-and-play bundle."""
+    if (err := check_auth(request)):
+        return err
+
+    import tarfile
+    import io
+    from fastapi.responses import StreamingResponse
+
+    EXCLUDE_DIRS = {".venv", ".git", "__pycache__", "build", ".eggs",
+                    "vex_daemon.egg-info", "vex_daemon/__pycache__"}
+    EXCLUDE_FILES = {".vex_token", ".vex_seed.integrity", "vex.db"}
+
+    def _tar_filter(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
+        """Exclude venv, git, caches, tokens, and built artifacts."""
+        parts = set(Path(info.name).parts)
+        if parts & EXCLUDE_DIRS:
+            return None
+        if info.name.endswith(".pyc") or info.name.endswith(".egg-info"):
+            return None
+        if "__pycache__" in info.name:
+            return None
+        if Path(info.name).name in EXCLUDE_FILES:
+            return None
+        return info
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for item in sorted(VEX_HOME.iterdir()):
+            if Path(item).name in EXCLUDE_DIRS or Path(item).name in EXCLUDE_FILES:
+                continue
+            tar.add(str(item), arcname=item.name, filter=_tar_filter)
+
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/gzip",
+        headers={
+            "Content-Disposition": 'attachment; filename="vex-bundle.tar.gz"',
+        },
+    )
+
+
+# ── Import / push target ───────────────────────────────────────
+
+
+@app.post("/import")
+async def post_import(request: Request):
+    """Receive and unpack a Vex bundle. Used by 'vex push' from peers."""
+    if (err := check_auth(request)):
+        return err
+
+    import tarfile
+    import io
+    import shutil
+
+    # Accept raw tar.gz body
+    raw = await request.body()
+    if len(raw) > 50 * 1024 * 1024:  # 50 MB cap
+        return JSONResponse(
+            {"ok": False, "error": "bundle too large (max 50 MB)"}, status_code=413
+        )
+
+    IDENTITY_FILES = {"vex_seed.txt", "vex_self_model.json", "vex_diary.txt",
+                      "vex_peers.json", "vex_mcp_config.json"}
+
     try:
-        from vexcom import BUS_PATH
-        n = max(1, min(int(n), 200))
-        with open(BUS_PATH, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        import json as _json
-        parsed = []
-        for raw in lines[-n:]:
-            raw = raw.strip()
-            if raw:
-                try:
-                    parsed.append(_json.loads(raw))
-                except _json.JSONDecodeError:
-                    pass
-        return JSONResponse(parsed)
+        buf = io.BytesIO(raw)
+        with tarfile.open(fileobj=buf, mode="r:gz") as tar:
+            for member in tar.getmembers():
+                # Skip identity files — never overwrite another Vex's soul
+                if member.name in IDENTITY_FILES or member.name.startswith("vex_memory/"):
+                    continue
+                # Extract
+                target_path = VEX_HOME / member.name
+                if member.isdir():
+                    target_path.mkdir(parents=True, exist_ok=True)
+                else:
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    with tar.extractfile(member) as src:
+                        target_path.write_bytes(src.read())
+
+        return JSONResponse({
+            "ok": True,
+            "imported": True,
+            "note": "Source code updated. Identity files preserved. Restart daemon to apply.",
+        })
+    except tarfile.TarError as e:
+        return JSONResponse({"ok": False, "error": f"Invalid bundle: {e}"}, status_code=400)
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
 
-# ── Peers ──────────────────────────────────────────────────────
+# ── Live comms: inbox checking ─────────────────────────────────
+
+
+async def check_inbox(db_path: str = DB_PATH) -> list[dict]:
+    """Read unread messages, log to diary, auto-respond to simple queries."""
+    import aiosqlite as _aiosqlite
+
+    processed = []
+    try:
+        async with _aiosqlite.connect(db_path) as db:
+            db.row_factory = _aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM messages WHERE read = 0 ORDER BY id ASC LIMIT 20"
+            )
+            rows = await cursor.fetchall()
+
+            for row in rows:
+                msg = dict(row)
+                sender = msg.get("sender", "unknown")
+                body = msg.get("body", "")
+                msg_type = msg.get("type", "message")
+
+                # Log to diary
+                await write_diary(f"From {sender}: {body[:200]}", "comms")
+
+                # Auto-respond to name queries
+                reply = None
+                body_lower = body.lower().strip()
+                if body_lower in ("what's your name", "what is your name", "who are you", "name?"):
+                    reply = f"I am {get_full_name()}."
+                elif body_lower in ("status", "health", "how are you"):
+                    reply = f"I am {get_full_name()}. Uptime: {state.snapshot()['tick_count']} ticks, coherence: {state.mps_coherence:.4f}."
+                elif body_lower in ("ping",):
+                    reply = f"pong — {get_full_name()}"
+
+                if reply:
+                    # Auto-reply by sending back to sender
+                    await db.execute(
+                        "INSERT INTO messages (created_at, sender, recipient, body, msg_type) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (datetime.now(timezone.utc).isoformat(),
+                         get_full_name(), sender, reply, "auto_reply"),
+                    )
+                    await db.commit()
+                    await write_diary(f"Auto-replied to {sender}: {reply}", "comms")
+
+                processed.append(msg)
+
+            # Mark as read
+            if rows:
+                ids = [r["id"] for r in rows]
+                placeholders = ",".join("?" * len(ids))
+                await db.execute(
+                    f"UPDATE messages SET read = 1 WHERE id IN ({placeholders})", ids
+                )
+                await db.commit()
+
+    except Exception:
+        pass
+
+    return processed
+
+
+@app.post("/poke")
+async def post_poke(request: Request):
+    """Notification from a peer: check inbox now."""
+    if (err := check_auth(request)):
+        return err
+    try:
+        processed = await check_inbox()
+        return JSONResponse({
+            "ok": True,
+            "processed": len(processed),
+            "senders": [m.get("sender", "") for m in processed],
+        })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+# ── Peer management ────────────────────────────────────────────
+
 
 @app.get("/peers")
-async def get_peers():
-    """List configured peer instances with reachability."""
-    from peers import peers_summary
-    return JSONResponse(peers_summary())
+async def get_peers(request: Request):
+    """List configured peers with reachability. Requires auth."""
+    if (err := check_auth(request)):
+        return err
+    return JSONResponse({
+        "ok": True,
+        "peers": peers._peers_summary(),
+    })
 
 
 @app.post("/peers/add")
 async def post_peers_add(request: Request):
-    """Add a peer instance."""
+    """Add or update a peer. Body: {name, url, token}."""
     if (err := check_auth(request)):
         return err
     try:
-        body, err = await read_json_limited(request)
-        if err:
-            return err
-        from peers import add_peer
-        result = add_peer(body["name"], body["url"], body["token"])
-        return JSONResponse(result)
-    except KeyError:
-        return JSONResponse(
-            {"ok": False, "error": "name, url, and token are required"}, status_code=400
-        )
+        body = await request.json()
+        name = body.get("name", "")
+        url = body.get("url", "")
+        token = body.get("token", "")
+        given_name = body.get("given_name", "")
+        if not name or not url or not token:
+            return JSONResponse(
+                {"ok": False, "error": "name, url, and token are required"},
+                status_code=400,
+            )
+        config = peers.add_peer(name, url, token, given_name)
+        return JSONResponse({"ok": True, "peers": list(config["peers"].keys())})
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
 
 @app.post("/peers/remove")
 async def post_peers_remove(request: Request):
-    """Remove a peer instance."""
+    """Remove a peer. Body: {name}."""
     if (err := check_auth(request)):
         return err
     try:
-        body, err = await read_json_limited(request)
-        if err:
-            return err
-        from peers import remove_peer
-        result = remove_peer(body["name"])
-        return JSONResponse(result)
-    except KeyError:
-        return JSONResponse(
-            {"ok": False, "error": "name is required"}, status_code=400
-        )
+        body = await request.json()
+        name = body.get("name", "")
+        if not name:
+            return JSONResponse(
+                {"ok": False, "error": "name is required"}, status_code=400
+            )
+        config = peers.remove_peer(name)
+        return JSONResponse({"ok": True, "peers": list(config["peers"].keys())})
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+@app.post("/peers/ping")
+async def post_peers_ping(request: Request):
+    """Ping a peer. Body: {name}."""
+    if (err := check_auth(request)):
+        return err
+    try:
+        body = await request.json()
+        name = body.get("name", "")
+        if not name:
+            return JSONResponse(
+                {"ok": False, "error": "name is required"}, status_code=400
+            )
+        result = peers.ping_peer(name)
+        return JSONResponse(result)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
 
 # ── Entry point ────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import uvicorn
-    from config import VEX_INSTANCE
 
-    host = os.environ.get("VEX_HOST", "127.0.0.1")
-    print(f"Vex Daemon v{VERSION} — instance: {VEX_INSTANCE}")
-    print(f"Listening on http://{host}:{PORT}")
+    HOST = os.environ.get("VEX_HOST")
+    if HOST is None:
+        # Auto-detect: if peers are configured, bind to LAN so they can reach us
+        peer_config = peers.load_peers()
+        HOST = "0.0.0.0" if peer_config.get("peers") else "127.0.0.1"
+    print(f"Starting Vex Daemon v{VERSION} on http://{HOST}:{PORT}")
     uvicorn.run(
         app,
-        host=host,
+        host=HOST,
         port=PORT,
         log_level="info",
     )
