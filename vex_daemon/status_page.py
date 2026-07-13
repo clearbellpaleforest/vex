@@ -69,6 +69,11 @@ def render(
 ) -> str:
     """Render the full HTML status page."""
 
+    # Compute full two-part name
+    name_val = seed_summary.get("name", "Vex")
+    given_val = seed_summary.get("given_name", "")
+    full_name = f"{name_val} {given_val}".strip() if given_val else name_val
+
     # Capability bars
     caps_html = ""
     for name, cap in model_summary.get("capabilities", {}).items():
@@ -116,7 +121,8 @@ def render(
 
 <h2>Identity</h2>
 <div class="block">
-    <div><span class="label">Name:</span> <span class="value">{seed_summary.get('name', 'Vex')}</span></div>
+    <div><span class="label">Name:</span> <span class="value">{full_name}</span></div>
+    {f'''<div><span class="label">Given:</span> <span class="value">{given_val}</span></div>''' if given_val else ''}
     <div><span class="label">Created:</span> <span class="value">{seed_summary.get('created', 'unknown')}</span></div>
     <div><span class="label">Principles intact:</span> <span class="{'ok' if seed_summary.get('principles_intact') else 'warn'}">{'yes' if seed_summary.get('principles_intact') else 'NO — CHECK SEED'}</span></div>
 </div>

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 from config import SAFE_ROOTS, WORK_DIR
+import playwright_tools
 
 # Cap a single file read so a giant file can't OOM the daemon.
 _MAX_READ_BYTES = 1_000_000  # 1 MB
@@ -199,6 +200,9 @@ def run_tool(tool_name: str, **kwargs) -> dict:
         "git_status": git_status,
         "git_log": git_log,
         "discover_projects": discover_projects,
+        "playwright_screenshot": playwright_tools.screenshot,
+        "playwright_text": playwright_tools.get_text,
+        "playwright_check_links": playwright_tools.check_links,
     }
 
     if tool_name not in tools:

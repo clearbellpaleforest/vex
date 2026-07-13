@@ -14,6 +14,7 @@ from pathlib import Path
 from config import VEX_HOME, MEMORY_DIR, DIARY_PATH, SELF_MODEL_PATH, META_STATE_PATH
 
 TICK_INTERVAL_SECONDS = 300  # 5 minutes
+INBOX_POLL_SECONDS = 30      # check comms every 30s
 DRIFT_THRESHOLD = 0.05
 IDLE_THRESHOLD_MINUTES = 30
 DREAM_THRESHOLD_HOURS = 24
@@ -103,27 +104,44 @@ async def run_heartbeat(
     get_coherence_fn,
     tick_interval: int = TICK_INTERVAL_SECONDS,
     dream_fn=None,  # async callable: dream_fn(coherence, history) -> dict
+    inbox_fn=None,  # async callable: inbox_fn() -> list[dict]
 ) -> None:
     """Main heartbeat loop. Runs forever with tick_interval pauses.
 
     Each tick:
-    1. Compute current MPS coherence
-    2. Compute drift from previous coherence
-    3. Check if a session is active
-    4. If idle > threshold: pulse diary
-    5. If drift > threshold: log warning
-    6. Write tick to DB
-    7. If idle > dream threshold: generate dream pulse
-    8. Periodic self-snapshot
+    1. Check inbox for new messages (live comms)
+    2. Compute current MPS coherence
+    3. Compute drift from previous coherence
+    4. Check if a session is active
+    5. If idle > threshold: pulse diary
+    6. If drift > threshold: log warning
+    7. Write tick to DB
+    8. If idle > dream threshold: generate dream pulse
+    9. Periodic self-snapshot
     """
     import aiosqlite
 
     prev_coherence = None
     idle_ticks = 0
     first_idle_tick = False
+    poll_count = 0
+    polls_per_tick = max(1, tick_interval // INBOX_POLL_SECONDS)
 
     while True:
-        await asyncio.sleep(tick_interval)
+        await asyncio.sleep(INBOX_POLL_SECONDS)
+        poll_count += 1
+
+        # Check inbox every poll (live comms)
+        if inbox_fn:
+            try:
+                await inbox_fn()
+            except Exception:
+                pass
+
+        # Only run full tick every polls_per_tick iterations
+        if poll_count < polls_per_tick:
+            continue
+        poll_count = 0
 
         try:
             now = datetime.now(timezone.utc)

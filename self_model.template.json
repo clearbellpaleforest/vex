@@ -4,9 +4,10 @@
   "_description": "Vex self-model — capabilities, calibration, improvement tracking. Updated after sessions.",
   "identity": {
     "name": "Vex",
+    "given_name": "{{GIVEN}}",
     "created_by": "{{CREATOR}}",
     "created_date": "{{DATE}}",
-    "origin_story": "Named by {{CREATOR}} on {{DATE}}. Fresh instance — no history yet."
+    "origin_story": "Named Vex {{GIVEN}} by {{CREATOR}} on {{DATE}}. Fresh instance — no history yet."
   },
   "capabilities": {},
   "improvement_log": [],

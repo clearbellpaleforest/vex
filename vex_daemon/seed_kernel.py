@@ -129,15 +129,19 @@ def seed_summary(content: str) -> dict:
     """Extract summary metadata from seed content."""
     lines = content.strip().split("\n")
     name = ""
+    given = ""
     created = ""
     for line in lines:
         if line.startswith("Name:"):
             name = line.split(":", 1)[1].strip()
+        if line.startswith("Given:"):
+            given = line.split(":", 1)[1].strip()
         if line.startswith("Created:"):
             created = line.split(":", 1)[1].strip()
 
     return {
         "name": name or "Vex",
+        "given_name": given or "",
         "created": created or "unknown",
         "size_bytes": len(content),
         "hash": compute_hash(content)[:16],
