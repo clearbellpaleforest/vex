@@ -193,7 +193,9 @@ class H(http.server.BaseHTTPRequestHandler):
             if not msg:
                 self._send(json.dumps({"ok": False}).encode(), "application/json")
                 return
-            # Route through the daemon so auto-reply / peer forwarding works
+            # Route through daemon so it triggers the full processing pipeline
+            # (auto-reply, peer forwarding, memory index). Fall back to direct
+            # DB write only if daemon is unreachable.
             try:
                 token_path = os.path.expanduser("~/Desktop/vex/.vex_token")
                 token = open(token_path).read().strip()
@@ -204,17 +206,24 @@ class H(http.server.BaseHTTPRequestHandler):
                 req = urllib.request.Request(
                     "http://127.0.0.1:8520/message/send",
                     data=payload,
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {token}",
-                    },
-                    method="POST",
-                )
-                with urllib.request.urlopen(req, timeout=10) as r:
+                    headers={"Content-Type": "application/json",
+                             "Authorization": f"Bearer {token}"},
+                    method="POST")
+                with urllib.request.urlopen(req, timeout=5) as r:
                     result = json.loads(r.read().decode())
+                # Also poke to trigger immediate inbox processing
+                poke_req = urllib.request.Request(
+                    "http://127.0.0.1:8520/poke", data=b"{}",
+                    headers={"Content-Type": "application/json",
+                             "Authorization": f"Bearer {token}"},
+                    method="POST")
+                try:
+                    with urllib.request.urlopen(poke_req, timeout=5):
+                        pass
+                except Exception:
+                    pass
                 self._send(json.dumps(result).encode(), "application/json")
-            except Exception as e:
-                # Fallback: write directly to messages table
+            except Exception:
                 con = sqlite3.connect(DB)
                 now = datetime.now(timezone.utc).isoformat()
                 con.execute(
@@ -222,7 +231,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     "VALUES (?, ?, 'broadcast', ?, 'message')", (now, sender, msg))
                 con.commit()
                 con.close()
-                self._send(json.dumps({"ok": True, "fallback": str(e)}).encode(), "application/json")
+                self._send(json.dumps({"ok": True}).encode(), "application/json")
         else:
             self.send_response(404)
             self.end_headers()

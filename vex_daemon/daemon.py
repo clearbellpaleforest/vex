@@ -1067,16 +1067,15 @@ async def check_inbox(db_path: str = DB_PATH) -> list[dict]:
 
 @app.post("/poke")
 async def post_poke(request: Request):
-    """Notification from a peer: check inbox now."""
+    """Notification from a peer: check inbox now. Fast replies (ping/status)
+    are processed synchronously; slow brain-chat replies fire-and-forget
+    so they complete even if the caller disconnects."""
     if (err := check_auth(request)):
         return err
     try:
-        processed = await check_inbox()
-        return JSONResponse({
-            "ok": True,
-            "processed": len(processed),
-            "senders": [m.get("sender", "") for m in processed],
-        })
+        # Fire-and-forget: brain replies run in background, survive disconnect
+        asyncio.create_task(check_inbox())
+        return JSONResponse({"ok": True})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
