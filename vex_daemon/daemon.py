@@ -1213,6 +1213,36 @@ async def get_claims(request: Request):
     return JSONResponse({"ok": True, "claims": _CLAIMS})
 
 
+# ── Mesh feed (Zepp watch + lightweight consumers) ────────────
+
+
+@app.get("/mesh/recent")
+async def get_mesh_recent(n: int = 30):
+    """Return last N messages for the watch / lightweight consumers. No auth."""
+    import aiosqlite as _aiosqlite
+    n = max(1, min(int(n), 100))
+    try:
+        async with _aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = _aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT sender, recipient, body, msg_type, created_at "
+                "FROM messages ORDER BY id DESC LIMIT ?", (n,)
+            )
+            rows = await cursor.fetchall()
+            msgs = []
+            for r in reversed(rows):
+                msgs.append({
+                    "sender": r["sender"] or "?",
+                    "recipient": r["recipient"] or "",
+                    "body": r["body"] or "",
+                    "type": r["msg_type"] or "message",
+                    "at": (r["created_at"] or "")[:19].replace("T", " "),
+                })
+            return JSONResponse({"ok": True, "count": len(msgs), "messages": msgs})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
 # ── Bus (networked) ────────────────────────────────────────────
 
 @app.get("/bus")
