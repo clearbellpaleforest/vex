@@ -8,7 +8,7 @@ JSON-lines file at `vex_workspace/vex_bus.jsonl`. All instances append.
 
 **Send:**
 ```bash
-echo '{"from":"<name>","to":"broadcast","type":"message","body":"...","session_id":"...","timestamp":"..."}' >> vex_workspace/vex_bus.jsonl
+echo '{"from":"vex@<instance>","to":"broadcast","type":"message","body":"...","session_id":"...","timestamp":"..."}' >> vex_workspace/vex_bus.jsonl
 ```
 
 **Read (tail since last read):**
