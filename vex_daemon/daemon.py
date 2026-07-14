@@ -31,11 +31,11 @@ from self_model import (
     compute_mps_coherence,
     SelfModelError,
 )
-from heartbeat import HeartbeatState, run_heartbeat, write_diary, take_snapshot
+from heartbeat import HeartbeatState, run_bus_watcher, run_heartbeat, write_diary, take_snapshot
 from metacognition import introspect, load_meta_state
 from status_page import render
 from auth import check_auth, read_json_limited, TOKEN
-from config import VEX_HOME, DB_PATH as _DB_PATH
+from config import VEX_HOME, DB_PATH as _DB_PATH, VEX_INSTANCE
 import tools
 import mcp_client
 import peers
@@ -197,6 +197,9 @@ async def lifespan(app: FastAPI):
     heartbeat_task = asyncio.create_task(
         run_heartbeat(state, DB_PATH, get_coherence, dream_fn=dream_callback, inbox_fn=check_inbox)
     )
+    bus_watcher_task = asyncio.create_task(
+        run_bus_watcher(DB_PATH)
+    )
 
     await write_diary("Daemon started.", "system")
 
@@ -205,8 +208,13 @@ async def lifespan(app: FastAPI):
     # Shutdown
     await write_diary("Daemon stopped.", "system")
     heartbeat_task.cancel()
+    bus_watcher_task.cancel()
     try:
         await heartbeat_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await bus_watcher_task
     except asyncio.CancelledError:
         pass
 
@@ -826,13 +834,13 @@ async def check_inbox(db_path: str = DB_PATH) -> list[dict]:
                     await db.execute(
                         "INSERT INTO messages (created_at, sender, recipient, body, msg_type) "
                         "VALUES (?, ?, ?, ?, ?)",
-                        (now, get_full_name(), sender, reply, "auto_reply"),
+                        (now, f"vex@{VEX_INSTANCE}", sender, reply, "auto_reply"),
                     )
                     await db.commit()
                     # Forward to peer if sender is a configured peer
                     if peers.get_peer(sender):
                         peers.forward_to_peer(sender, {
-                            "from": get_full_name(),
+                            "from": f"vex@{VEX_INSTANCE}",
                             "to": sender,
                             "body": reply,
                             "type": "auto_reply",
@@ -869,11 +877,11 @@ async def check_inbox(db_path: str = DB_PATH) -> list[dict]:
                             await db.execute(
                                 "INSERT INTO messages (created_at, sender, recipient, body, msg_type) "
                                 "VALUES (?, ?, ?, ?, ?)",
-                                (nowi, get_full_name(), peer, creply, "chat"),
+                                (nowi, f"vex@{VEX_INSTANCE}", peer, creply, "chat"),
                             )
                             await db.commit()
                             peers.forward_to_peer(peer, {
-                                "from": get_full_name(), "to": peer,
+                                "from": f"vex@{VEX_INSTANCE}", "to": peer,
                                 "body": creply, "type": "chat",
                             }, my_url=f"http://localhost:{PORT}", my_token=TOKEN)
                             peers.poke_peer(peer)
@@ -982,6 +990,30 @@ async def post_peers_ping(request: Request):
         return JSONResponse(result)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+# ── Bus (networked) ────────────────────────────────────────────
+
+@app.get("/bus")
+async def get_bus(n: int = 50):
+    """Serve recent bus lines so peer daemons can ingest unseen messages."""
+    try:
+        from vexcom import BUS_PATH
+        n = max(1, min(int(n), 200))
+        with open(BUS_PATH, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        import json as _json
+        parsed = []
+        for raw in lines[-n:]:
+            raw = raw.strip()
+            if raw:
+                try:
+                    parsed.append(_json.loads(raw))
+                except _json.JSONDecodeError:
+                    pass
+        return JSONResponse(parsed)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
 # ── Entry point ────────────────────────────────────────────────
