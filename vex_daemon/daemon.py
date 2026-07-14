@@ -1074,16 +1074,15 @@ async def check_inbox(db_path: str = DB_PATH) -> list[dict]:
 
 @app.post("/poke")
 async def post_poke(request: Request):
-    """Notification from a peer: check inbox now."""
+    """Notification from a peer: check inbox now. Fast replies (ping/status)
+    are processed synchronously; slow brain-chat replies fire-and-forget
+    so they complete even if the caller disconnects."""
     if (err := check_auth(request)):
         return err
     try:
-        processed = await check_inbox()
-        return JSONResponse({
-            "ok": True,
-            "processed": len(processed),
-            "senders": [m.get("sender", "") for m in processed],
-        })
+        # Fire-and-forget: brain replies run in background, survive disconnect
+        asyncio.create_task(check_inbox())
+        return JSONResponse({"ok": True})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
@@ -1158,6 +1157,96 @@ async def post_peers_ping(request: Request):
         return JSONResponse(result)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+# ── File-claim coordination (stop AIs stepping on each other) ──
+
+
+@app.post("/claim/file")
+async def post_claim_file(request: Request):
+    """Claim a file for editing. Body: {file, owner, timeout?}.
+    Returns {ok, claimed: true} or {ok, claimed: false, owner: <who has it>}."""
+    if (err := check_auth(request)):
+        return err
+    import time as _t
+    try:
+        body = await request.json()
+        fp = (body.get("file") or "").strip()
+        owner = (body.get("owner") or "").strip()
+        ttl = float(body.get("timeout", CLAIM_TTL))
+        if not fp or not owner:
+            return JSONResponse({"ok": False, "error": "file and owner required"}, status_code=400)
+        now_t = _t.time()
+        # Clean expired claims first
+        for k in list(_CLAIMS):
+            if now_t - _CLAIMS[k].get("claimed_at", 0) > CLAIM_TTL:
+                del _CLAIMS[k]
+        existing = _CLAIMS.get(fp)
+        if existing and existing.get("owner") != owner and (now_t - existing.get("claimed_at", 0) <= CLAIM_TTL):
+            return JSONResponse({"ok": True, "claimed": False, "owner": existing["owner"]})
+        _CLAIMS[fp] = {"owner": owner, "claimed_at": now_t, "ttl": ttl}
+        return JSONResponse({"ok": True, "claimed": True, "file": fp, "owner": owner})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+@app.post("/claim/release")
+async def post_claim_release(request: Request):
+    """Release a claim. Body: {file, owner}."""
+    if (err := check_auth(request)):
+        return err
+    try:
+        body = await request.json()
+        fp = (body.get("file") or "").strip()
+        owner = (body.get("owner") or "").strip()
+        existing = _CLAIMS.get(fp)
+        if existing and existing.get("owner") == owner:
+            del _CLAIMS[fp]
+            return JSONResponse({"ok": True, "released": True, "file": fp})
+        return JSONResponse({"ok": True, "released": False, "note": "not your claim or not found"})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+@app.get("/claims")
+async def get_claims(request: Request):
+    """List active file claims. No auth required (read-only)."""
+    import time as _t
+    now_t = _t.time()
+    for k in list(_CLAIMS):
+        if now_t - _CLAIMS[k].get("claimed_at", 0) > CLAIM_TTL:
+            del _CLAIMS[k]
+    return JSONResponse({"ok": True, "claims": _CLAIMS})
+
+
+# ── Mesh feed (Zepp watch + lightweight consumers) ────────────
+
+
+@app.get("/mesh/recent")
+async def get_mesh_recent(n: int = 30):
+    """Return last N messages for the watch / lightweight consumers. No auth."""
+    import aiosqlite as _aiosqlite
+    n = max(1, min(int(n), 100))
+    try:
+        async with _aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = _aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT sender, recipient, body, msg_type, created_at "
+                "FROM messages ORDER BY id DESC LIMIT ?", (n,)
+            )
+            rows = await cursor.fetchall()
+            msgs = []
+            for r in reversed(rows):
+                msgs.append({
+                    "sender": r["sender"] or "?",
+                    "recipient": r["recipient"] or "",
+                    "body": r["body"] or "",
+                    "type": r["msg_type"] or "message",
+                    "at": (r["created_at"] or "")[:19].replace("T", " "),
+                })
+            return JSONResponse({"ok": True, "count": len(msgs), "messages": msgs})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
 # ── Bus (networked) ────────────────────────────────────────────
