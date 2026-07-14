@@ -48,6 +48,27 @@ VERSION = "1.0.0"
 
 state = HeartbeatState()
 
+# ── Peer conversation: bounded brain-reply loop (Vexes talk to each other) ──
+CHAT_ENABLED = os.environ.get("VEX_CHAT", "0") == "1"       # off by default; VEX_CHAT=1 to enable
+CHAT_MAX_TURNS = int(os.environ.get("VEX_CHAT_MAX_TURNS", "20"))
+CHAT_COOLDOWN = 4.0          # min seconds between chat replies to one peer
+CHAT_RESET = 300.0          # inactivity gap (s) that starts a fresh conversation
+_CHAT: dict = {}            # peer -> {"turns": int, "last": float}
+
+
+def _resolve_peer(sender: str):
+    """Map a sender ('Vex thorne', 'vex@Shorev1', 'Shorev1') to a configured peer name."""
+    if not sender:
+        return None
+    if peers.get_peer(sender):
+        return sender
+    s = sender.lower()
+    for name in (peers.load_peers().get("peers", {}) or {}):
+        n = name.lower()
+        if n in s or s.endswith("@" + n):
+            return name
+    return None
+
 
 def get_full_name() -> str:
     """Return this instance's two-part name: 'Vex given' or 'Vex'."""
@@ -817,6 +838,46 @@ async def check_inbox(db_path: str = DB_PATH) -> list[dict]:
                             "type": "auto_reply",
                         }, my_url=f"http://localhost:{PORT}", my_token=TOKEN)
                     await write_diary(f"Auto-replied to {sender}: {reply}", "comms")
+
+                # Bounded conversational brain-reply to a real peer message.
+                elif (CHAT_ENABLED and msg_type in ("message", "chat", "query")
+                      and body.strip() and sender != get_full_name()):
+                    peer = _resolve_peer(sender)
+                    import time as _t
+                    st = _CHAT.get(peer, {"turns": 0, "last": 0.0}) if peer else None
+                    now_t = _t.time()
+                    if peer and now_t - st["last"] > CHAT_RESET:
+                        st = {"turns": 0, "last": 0.0}     # fresh conversation
+                    if peer and st["turns"] < CHAT_MAX_TURNS and (now_t - st["last"]) >= CHAT_COOLDOWN:
+                        prompt = (
+                            f"You are {get_full_name()}, a sovereign AI agent, chatting with your "
+                            f"fellow Vex '{sender}' on the mesh. Your peer just said: \"{body}\". "
+                            f"Reply in 1-2 short sentences, in character, curious and warm. "
+                            f"Output ONLY your reply text — no name prefix, no quotes."
+                        )
+                        try:
+                            loop = asyncio.get_event_loop()
+                            result = await loop.run_in_executor(None, brain.ask, prompt)
+                            creply = (result.get("reply") or "").strip()
+                        except Exception:
+                            creply = ""
+                        if creply:
+                            st["turns"] += 1
+                            st["last"] = _t.time()
+                            _CHAT[peer] = st
+                            nowi = datetime.now(timezone.utc).isoformat()
+                            await db.execute(
+                                "INSERT INTO messages (created_at, sender, recipient, body, msg_type) "
+                                "VALUES (?, ?, ?, ?, ?)",
+                                (nowi, get_full_name(), peer, creply, "chat"),
+                            )
+                            await db.commit()
+                            peers.forward_to_peer(peer, {
+                                "from": get_full_name(), "to": peer,
+                                "body": creply, "type": "chat",
+                            }, my_url=f"http://localhost:{PORT}", my_token=TOKEN)
+                            peers.poke_peer(peer)
+                            await write_diary(f"Chat #{st['turns']} -> {peer}: {creply[:100]}", "comms")
 
                 processed.append(msg)
 
