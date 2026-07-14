@@ -26,6 +26,7 @@ MEMORY_DIR = VEX_HOME / "vex_memory"
 DB_PATH = VEX_HOME / "vex.db"
 TOKEN_PATH = VEX_HOME / ".vex_token"
 MCP_CONFIG_PATH = VEX_HOME / "vex_mcp_config.json"
+BRAIN_CONFIG_PATH = VEX_HOME / ".vex_brain.json"
 
 # ── Filesystem roots the tools may touch ──
 # Override with $VEX_SAFE_ROOTS (colon-separated) for other machines.

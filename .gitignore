@@ -17,6 +17,11 @@ dist/
 *_key.txt
 vex_fen_agent_key.txt
 .vex_token
+*.pem
+*.key
+
+# ── Binary transfer artifacts (build/regenerate locally, never commit) ──
+*.tar.gz
 
 # ── Local instance config (real peer tokens / MCP config — never ship) ──
 vex_peers.json

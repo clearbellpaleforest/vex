@@ -39,6 +39,7 @@ from config import VEX_HOME, DB_PATH as _DB_PATH
 import tools
 import mcp_client
 import peers
+import brain
 
 DB_PATH = str(_DB_PATH)
 SELF_SNAPSHOTS_DIR = VEX_HOME
@@ -421,6 +422,28 @@ async def get_memory_recent():
             pass
 
     return JSONResponse(sessions[:10])
+
+
+@app.post("/ask")
+async def post_ask(request: Request):
+    """Ask Vex — text in, Vex's grounded reply out (local brain). Runs off-loop."""
+    if (err := check_auth(request)):
+        return err
+    try:
+        body, err = await read_json_limited(request)
+        if err:
+            return err
+        message = (body.get("message") or "").strip()
+        if not message:
+            return JSONResponse(
+                {"ok": False, "error": "message is required"}, status_code=400
+            )
+        history = body.get("history")
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, brain.ask, message, history)
+        return JSONResponse({"ok": True, **result})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
 @app.post("/tools")
