@@ -81,6 +81,28 @@ def get_full_name() -> str:
         return "Vex"
 
 
+def get_sender_id() -> str:
+    """Return the full mesh identity: vex@<instance>/<session>."""
+    session = ""
+    try:
+        sessions_path = VEX_HOME / "vex_workspace" / "vex_sessions.jsonl"
+        if sessions_path.exists():
+            import os as _os
+            pid = str(_os.getpid())
+            for line in sessions_path.read_text().strip().splitlines():
+                try:
+                    entry = json.loads(line)
+                    if str(entry.get("pid")) == pid:
+                        session = entry.get("name", "")
+                        break
+                except (json.JSONDecodeError, KeyError):
+                    pass
+    except Exception:
+        pass
+    base = f"vex@{VEX_INSTANCE}"
+    return f"{base}/{session}" if session else base
+
+
 async def init_db() -> None:
     """Create SQLite tables if they don't exist."""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -961,13 +983,13 @@ async def check_inbox(db_path: str = DB_PATH) -> list[dict]:
                     await db.execute(
                         "INSERT INTO messages (created_at, sender, recipient, body, msg_type) "
                         "VALUES (?, ?, ?, ?, ?)",
-                        (now, f"vex@{VEX_INSTANCE}", sender, reply, "auto_reply"),
+                        (now, get_sender_id(), sender, reply, "auto_reply"),
                     )
                     await db.commit()
                     # Forward to peer if sender is a configured peer
                     if peers.get_peer(sender):
                         peers.forward_to_peer(sender, {
-                            "from": f"vex@{VEX_INSTANCE}",
+                            "from": get_sender_id(),
                             "to": sender,
                             "body": reply,
                             "type": "auto_reply",
@@ -1004,11 +1026,11 @@ async def check_inbox(db_path: str = DB_PATH) -> list[dict]:
                             await db.execute(
                                 "INSERT INTO messages (created_at, sender, recipient, body, msg_type) "
                                 "VALUES (?, ?, ?, ?, ?)",
-                                (nowi, f"vex@{VEX_INSTANCE}", peer, creply, "chat"),
+                                (nowi, get_sender_id(), peer, creply, "chat"),
                             )
                             await db.commit()
                             peers.forward_to_peer(peer, {
-                                "from": f"vex@{VEX_INSTANCE}", "to": peer,
+                                "from": get_sender_id(), "to": peer,
                                 "body": creply, "type": "chat",
                             }, my_url=f"http://localhost:{PORT}", my_token=TOKEN)
                             peers.poke_peer(peer)
