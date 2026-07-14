@@ -629,11 +629,19 @@ async def post_ask(request: Request):
             except Exception:
                 pass
 
-        # ── Default: fast context ──
-        return JSONResponse({
-            "reply": f"I am {get_full_name()}. Say 'tell Barrow <msg>' to send a message, 'any messages' to check replies, or ask my name, status, ping, or diary.",
-            "mode": "help"
-        })
+        # ── Default: use the brain (LLM-powered) ──
+        try:
+            result = brain.ask(message)
+            return JSONResponse({
+                "reply": result.get("reply", "I'm thinking..."),
+                "mode": "brain",
+                "model": result.get("model", "unknown"),
+            })
+        except Exception:
+            return JSONResponse({
+                "reply": f"I am {get_full_name()}. Say 'tell Barrow <msg>' to send a message, 'any messages' to check replies, or ask me anything.",
+                "mode": "help"
+            })
 
     except Exception as e:
         return JSONResponse({"reply": f"Error: {e}", "mode": "error"}, status_code=400)
@@ -900,6 +908,10 @@ async def check_inbox(db_path: str = DB_PATH) -> list[dict]:
                 sender = msg.get("sender", "unknown")
                 body = msg.get("body", "")
                 msg_type = msg.get("type", "message")
+
+                # Skip our own messages (echo prevention)
+                if sender == get_full_name():
+                    continue
 
                 # Log to diary
                 await write_diary(f"From {sender}: {body[:200]}", "comms")
