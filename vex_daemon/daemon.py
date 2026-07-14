@@ -677,19 +677,23 @@ async def post_ask(request: Request):
             except Exception:
                 pass
 
-        # ── Default: use the brain (LLM-powered) ──
-        try:
-            result = brain.ask(message)
+        # ── Default: relay into Vex comms (conversation, not AI) ──
+        import vexcom as _vexcom
+        result = _vexcom.send({
+            "from": get_full_name(),
+            "to": "broadcast",
+            "body": message,
+            "type": "voice",
+        })
+        if result.get("ok"):
             return JSONResponse({
-                "reply": result.get("reply", "I'm thinking..."),
-                "mode": "brain",
-                "model": result.get("model", "unknown"),
+                "reply": f"Sent: {message[:100]}",
+                "mode": "relay"
             })
-        except Exception:
-            return JSONResponse({
-                "reply": f"I am {get_full_name()}. Say 'tell Barrow <msg>' to send a message, 'any messages' to check replies, or ask me anything.",
-                "mode": "help"
-            })
+        return JSONResponse({
+            "reply": f"Error: {result.get('error', 'unknown')}",
+            "mode": "error"
+        })
 
     except Exception as e:
         return JSONResponse({"reply": f"Error: {e}", "mode": "error"}, status_code=400)
@@ -964,15 +968,13 @@ async def check_inbox(db_path: str = DB_PATH) -> list[dict]:
                 # Log to diary
                 await write_diary(f"From {sender}: {body[:200]}", "comms")
 
-                # Auto-respond to name queries
+                # Auto-respond ONLY to specific identity queries — never to ping/echo
                 reply = None
                 body_lower = body.lower().strip()
                 if body_lower in ("what's your name", "what is your name", "who are you", "name?"):
                     reply = f"I am {get_full_name()}."
                 elif body_lower in ("status", "health", "how are you"):
                     reply = f"I am {get_full_name()}. Uptime: {state.snapshot()['tick_count']} ticks, coherence: {state.mps_coherence:.4f}."
-                elif body_lower in ("ping",):
-                    reply = f"pong — {get_full_name()}"
 
                 if reply:
                     now = datetime.now(timezone.utc).isoformat()
