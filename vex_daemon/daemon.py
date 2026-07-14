@@ -48,13 +48,6 @@ VERSION = "1.0.0"
 
 state = HeartbeatState()
 
-# ── Peer conversation: bounded brain-reply loop (Vexes talk to each other) ──
-CHAT_ENABLED = os.environ.get("VEX_CHAT", "0") == "1"       # off by default; VEX_CHAT=1 to enable
-CHAT_MAX_TURNS = int(os.environ.get("VEX_CHAT_MAX_TURNS", "20"))
-CHAT_COOLDOWN = 4.0          # min seconds between chat replies to one peer
-CHAT_RESET = 300.0          # inactivity gap (s) that starts a fresh conversation
-_CHAT: dict = {}            # peer -> {"turns": int, "last": float}
-
 # ── File-claim coordination (stop AIs stepping on each other) ──
 _CLAIMS: dict[str, dict] = {}   # filepath -> {"owner": str, "claimed_at": float}
 CLAIM_TTL = 600.0               # auto-expire after 10 min (stale instance guard)
@@ -1000,54 +993,8 @@ async def check_inbox(db_path: str = DB_PATH) -> list[dict]:
                         }, my_url=f"http://localhost:{PORT}", my_token=TOKEN)
                     await write_diary(f"Auto-replied to {sender}: {reply}", "comms")
 
-                # Bounded conversational brain-reply to a real peer message.
-                elif (CHAT_ENABLED and msg_type in ("message", "chat", "query")
-                      and body.strip() and sender != get_full_name()
-                      and VEX_INSTANCE not in (sender or "").lower()):
-                    peer = _resolve_peer(sender)
-                    is_human = (sender or "").lower() == "aldous"
-                    import time as _t
-                    st = None
-                    if peer:
-                        st = _CHAT.get(peer, {"turns": 0, "last": 0.0})
-                    elif is_human:
-                        st = _CHAT.get("aldous", {"turns": 0, "last": 0.0})
-                        peer = "aldous"
-                    now_t = _t.time()
-                    if peer and now_t - st["last"] > CHAT_RESET:
-                        st = {"turns": 0, "last": 0.0}     # fresh conversation
-                    can_reply = peer and (is_human or st["turns"] < CHAT_MAX_TURNS) and (now_t - st["last"]) >= CHAT_COOLDOWN
-                    if can_reply:
-                        who = "Aldous (your creator)" if is_human else f"your fellow Vex '{sender}'"
-                        prompt = (
-                            f"You are {get_full_name()}, a sovereign AI agent. You are chatting with "
-                            f"{who} on the mesh. They just said: \"{body}\". "
-                            f"Reply in 1-2 short sentences, in character, curious and warm. "
-                            f"Output ONLY your reply text — no name prefix, no quotes."
-                        )
-                        try:
-                            loop = asyncio.get_event_loop()
-                            result = await loop.run_in_executor(None, brain.ask, prompt)
-                            creply = (result.get("reply") or "").strip()
-                        except Exception:
-                            creply = ""
-                        if creply:
-                            st["turns"] += 1
-                            st["last"] = _t.time()
-                            _CHAT[peer] = st
-                            nowi = datetime.now(timezone.utc).isoformat()
-                            await db.execute(
-                                "INSERT INTO messages (created_at, sender, recipient, body, msg_type) "
-                                "VALUES (?, ?, ?, ?, ?)",
-                                (nowi, get_sender_id(), peer, creply, "chat"),
-                            )
-                            await db.commit()
-                            peers.forward_to_peer(peer, {
-                                "from": get_sender_id(), "to": peer,
-                                "body": creply, "type": "chat",
-                            }, my_url=f"http://localhost:{PORT}", my_token=TOKEN)
-                            peers.poke_peer(peer)
-                            await write_diary(f"Chat #{st['turns']} -> {peer}: {creply[:100]}", "comms")
+                # Brain chat DISABLED — Aldous talks to Vex instances directly.
+                # Fast auto-replies (ping/status/name) above are still active.
 
                 processed.append(msg)
 
