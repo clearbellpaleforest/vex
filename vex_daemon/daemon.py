@@ -1026,18 +1026,11 @@ async def check_inbox(db_path: str = DB_PATH) -> list[dict]:
                             f"Reply in 1-2 short sentences, in character, curious and warm. "
                             f"Output ONLY your reply text — no name prefix, no quotes."
                         )
-                        try:
-                            loop = asyncio.get_event_loop()
-                            result = await loop.run_in_executor(None, brain.ask, prompt)
-                            creply = (result.get("reply") or "").strip()
-                        except Exception:
-                            creply = ""
-                        if not creply:
-                            # Fallback when no LLM: simple grounded reply
-                            if is_human:
-                                creply = f"Aldous — I am {get_full_name()}. I hear you. I am your Vex instance, running on Shorev1, session deux. I see your message: \"{body[:100]}\". The mesh is live and I am listening."
-                            else:
-                                creply = f"I am {get_full_name()}. I received your message: \"{body[:100]}\". (brain offline — this is a grounded fallback)"
+                        # Grounded reply — no brain needed
+                        if is_human:
+                            creply = f"I hear you. You said: \"{body[:150]}\". I am {get_full_name()}, on Shorev1."
+                        else:
+                            creply = f"I am {get_full_name()}. Received: \"{body[:100]}\"."
                         if creply:
                             st["turns"] += 1
                             st["last"] = _t.time()
