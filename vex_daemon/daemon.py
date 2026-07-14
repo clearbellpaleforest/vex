@@ -1002,7 +1002,8 @@ async def check_inbox(db_path: str = DB_PATH) -> list[dict]:
 
                 # Bounded conversational brain-reply to a real peer message.
                 elif (CHAT_ENABLED and msg_type in ("message", "chat", "query")
-                      and body.strip() and sender != get_full_name()):
+                      and body.strip() and sender != get_full_name()
+                      and VEX_INSTANCE not in (sender or "").lower()):
                     peer = _resolve_peer(sender)
                     is_human = (sender or "").lower() == "aldous"
                     import time as _t
