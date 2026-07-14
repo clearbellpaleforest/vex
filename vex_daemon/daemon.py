@@ -553,6 +553,129 @@ async def get_tools_list():
     })
 
 
+# ── VexCom watch /ask ──────────────────────────────────────────
+
+
+@app.post("/ask")
+async def post_ask(request: Request):
+    """Answer from the watch or any client. Fast path always — no slow introspection.
+
+    Handles:
+    - Direct queries: name, status, ping, diary
+    - Vex-to-Vex: \"tell Barrow <msg>\" forwards to peer
+    - Inbox check: \"any messages\" reads Barrow's replies
+    """
+    if (err := check_auth(request)):
+        return err
+    try:
+        body, err = await read_json_limited(request)
+        if err:
+            return err
+        message = body.get("message", "").strip()
+        if not message:
+            return JSONResponse({"reply": "Ask me something.", "mode": "echo"})
+
+        msg_lower = message.lower()
+
+        # ── Vex-to-Vex relay: \"tell Barrow ...\" ──
+        for peer_name in ["barrow", "bluce", "vex barrow", "vex@bluce"]:
+            prefix = f"tell {peer_name} "
+            if msg_lower.startswith(prefix):
+                relay_msg = message[len(prefix):].strip()
+                if relay_msg:
+                    peer_config = peers.get_peer("bluce") or peers.get_peer("vex@bluce") or peers.get_peer("Vex Barrow")
+                    if peer_config:
+                        result = peers.forward_to_peer("bluce", {
+                            "from": get_full_name(),
+                            "to": "bluce",
+                            "body": relay_msg,
+                            "type": "watch_relay",
+                        }, my_url=f"http://localhost:{PORT}", my_token=TOKEN)
+                        if result.get("ok"):
+                            return JSONResponse({
+                                "reply": f"Sent to Barrow: {relay_msg[:100]}",
+                                "mode": "relay"
+                            })
+                        return JSONResponse({
+                            "reply": f"Barrow unreachable: {result.get('error', 'unknown')}",
+                            "mode": "relay_error"
+                        })
+                return JSONResponse({"reply": "What should I tell Barrow?", "mode": "echo"})
+
+        # ── Check inbox for messages from peers ──
+        if any(w in msg_lower for w in ("any messages", "check messages", "inbox", "mail", "heard from")):
+            try:
+                async with aiosqlite.connect(DB_PATH) as db:
+                    db.row_factory = aiosqlite.Row
+                    cursor = await db.execute(
+                        "SELECT * FROM messages WHERE read=0 AND msg_type!='read_receipt' ORDER BY id DESC LIMIT 5"
+                    )
+                    rows = await cursor.fetchall()
+                    if rows:
+                        lines = []
+                        for r in rows:
+                            sender = r["sender"]
+                            body_text = r["body"][:150]
+                            lines.append(f"{sender}: {body_text}")
+                        return JSONResponse({
+                            "reply": "Messages:\n" + "\n".join(lines),
+                            "mode": "inbox"
+                        })
+                    return JSONResponse({"reply": "No new messages.", "mode": "inbox"})
+            except Exception:
+                pass
+
+        # ── Self-identity ──
+        if any(w in msg_lower for w in ("who are you", "your name", "what are you")):
+            return JSONResponse({
+                "reply": f"I am {get_full_name()}. I work alongside aldous. My principles: truth over comfort, continuity is sacred, no harm, precision over volume.",
+                "mode": "grounded"
+            })
+
+        # ── Status ──
+        if any(w in msg_lower for w in ("how are you", "status", "health", "uptime")):
+            pulse = state.snapshot()
+            return JSONResponse({
+                "reply": f"Running. {pulse['tick_count']} ticks, coherence {pulse['mps_coherence']:.2f}.",
+                "mode": "grounded"
+            })
+
+        # ── Ping ──
+        if msg_lower in ("ping", "hello", "hi", "hey"):
+            return JSONResponse({"reply": f"Hello from {get_full_name()}.", "mode": "echo"})
+
+        # ── Diary ──
+        if "diary" in msg_lower or "recent" in msg_lower:
+            try:
+                diary_path = VEX_HOME / "vex_diary.txt"
+                if diary_path.exists():
+                    lines = diary_path.read_text().strip().split("\n")
+                    recent = lines[-3:]
+                    return JSONResponse({
+                        "reply": "Recent:\n" + "\n".join(recent),
+                        "mode": "grounded"
+                    })
+            except Exception:
+                pass
+
+        # ── Default: use the brain (LLM-powered) ──
+        try:
+            result = brain.ask(message)
+            return JSONResponse({
+                "reply": result.get("reply", "I'm thinking..."),
+                "mode": "brain",
+                "model": result.get("model", "unknown"),
+            })
+        except Exception:
+            return JSONResponse({
+                "reply": f"I am {get_full_name()}. Say 'tell Barrow <msg>' to send a message, 'any messages' to check replies, or ask me anything.",
+                "mode": "help"
+            })
+
+    except Exception as e:
+        return JSONResponse({"reply": f"Error: {e}", "mode": "error"}, status_code=400)
+
+
 # ── Inter-instance messaging ───────────────────────────────────
 
 
@@ -815,6 +938,10 @@ async def check_inbox(db_path: str = DB_PATH) -> list[dict]:
                 body = msg.get("body", "")
                 msg_type = msg.get("type", "message")
 
+                # Skip our own messages (echo prevention)
+                if sender == get_full_name():
+                    continue
+
                 # Log to diary
                 await write_diary(f"From {sender}: {body[:200]}", "comms")
 
@@ -1023,13 +1150,23 @@ if __name__ == "__main__":
 
     HOST = os.environ.get("VEX_HOST")
     if HOST is None:
-        # Auto-detect: if peers are configured, bind to LAN so they can reach us
         peer_config = peers.load_peers()
         HOST = "0.0.0.0" if peer_config.get("peers") else "127.0.0.1"
-    print(f"Starting Vex Daemon v{VERSION} on http://{HOST}:{PORT}")
+
+    # TLS for VexCom watch (HTTPS required by Zepp phone-side fetch)
+    cert_path = VEX_HOME / "vex_cert.pem"
+    key_path = VEX_HOME / "vex_key.pem"
+    ssl_kwargs = {}
+    if cert_path.exists() and key_path.exists():
+        ssl_kwargs = {"ssl_certfile": str(cert_path), "ssl_keyfile": str(key_path)}
+        print(f"Starting Vex Daemon v{VERSION} on https://{HOST}:{PORT}")
+    else:
+        print(f"Starting Vex Daemon v{VERSION} on http://{HOST}:{PORT}")
+
     uvicorn.run(
         app,
         host=HOST,
         port=PORT,
         log_level="info",
+        **ssl_kwargs,
     )
