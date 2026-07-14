@@ -1243,6 +1243,43 @@ async def get_mesh_recent(n: int = 30):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
+@app.get("/mesh/inbox")
+async def get_mesh_inbox(who: str = "", n: int = 10):
+    """Unread messages for a specific instance. No auth. Used by Vex
+    sessions on bootstrap to see what they missed."""
+    import aiosqlite as _aiosqlite
+    n = max(1, min(int(n), 50))
+    who = who.strip()
+    try:
+        async with _aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = _aiosqlite.Row
+            if who:
+                cursor = await db.execute(
+                    "SELECT sender, recipient, body, msg_type, created_at FROM messages "
+                    "WHERE read = 0 AND (recipient = ? OR recipient = 'broadcast' OR recipient = ?) "
+                    "ORDER BY id ASC LIMIT ?",
+                    (who, get_sender_id(), n),
+                )
+            else:
+                cursor = await db.execute(
+                    "SELECT sender, recipient, body, msg_type, created_at FROM messages "
+                    "WHERE read = 0 ORDER BY id ASC LIMIT ?", (n,)
+                )
+            rows = await cursor.fetchall()
+            msgs = []
+            for r in rows:
+                msgs.append({
+                    "sender": r["sender"] or "?",
+                    "recipient": r["recipient"] or "",
+                    "body": r["body"] or "",
+                    "type": r["msg_type"] or "message",
+                    "at": (r["created_at"] or "")[:19].replace("T", " "),
+                })
+            return JSONResponse({"ok": True, "count": len(msgs), "messages": msgs})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
 # ── Bus (networked) ────────────────────────────────────────────
 
 @app.get("/bus")
