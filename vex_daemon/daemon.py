@@ -975,18 +975,13 @@ async def check_inbox(db_path: str = DB_PATH) -> list[dict]:
                 # Log to diary
                 await write_diary(f"From {sender}: {body[:200]}", "comms")
 
-                # Auto-respond to name queries (skip auto_reply/read_receipt to prevent loops)
+                # Auto-respond ONLY to specific identity queries — never to ping/echo
                 reply = None
-                if msg_type in ("auto_reply", "read_receipt"):
-                    pass  # never auto-respond to system messages
-                else:
-                    body_lower = body.lower().strip()
-                    if body_lower in ("what's your name", "what is your name", "who are you", "name?"):
-                        reply = f"I am {get_full_name()}."
-                    elif body_lower in ("status", "health", "how are you"):
-                        reply = f"I am {get_full_name()}. Uptime: {state.snapshot()['tick_count']} ticks, coherence: {state.mps_coherence:.4f}."
-                    elif body_lower in ("ping",):
-                        reply = f"pong — {get_full_name()}"
+                body_lower = body.lower().strip()
+                if body_lower in ("what's your name", "what is your name", "who are you", "name?"):
+                    reply = f"I am {get_full_name()}."
+                elif body_lower in ("status", "health", "how are you"):
+                    reply = f"I am {get_full_name()}. Uptime: {state.snapshot()['tick_count']} ticks, coherence: {state.mps_coherence:.4f}."
 
                 if reply:
                     now = datetime.now(timezone.utc).isoformat()
