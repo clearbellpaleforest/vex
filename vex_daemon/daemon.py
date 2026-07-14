@@ -55,6 +55,10 @@ CHAT_COOLDOWN = 4.0          # min seconds between chat replies to one peer
 CHAT_RESET = 300.0          # inactivity gap (s) that starts a fresh conversation
 _CHAT: dict = {}            # peer -> {"turns": int, "last": float}
 
+# ── File-claim coordination (stop AIs stepping on each other) ──
+_CLAIMS: dict[str, dict] = {}   # filepath -> {"owner": str, "claimed_at": float}
+CLAIM_TTL = 600.0               # auto-expire after 10 min (stale instance guard)
+
 
 def _resolve_peer(sender: str):
     """Map a sender ('Vex thorne', 'vex@Shorev1', 'Shorev1') to a configured peer name."""
@@ -1000,15 +1004,23 @@ async def check_inbox(db_path: str = DB_PATH) -> list[dict]:
                 elif (CHAT_ENABLED and msg_type in ("message", "chat", "query")
                       and body.strip() and sender != get_full_name()):
                     peer = _resolve_peer(sender)
+                    is_human = (sender or "").lower() == "aldous"
                     import time as _t
-                    st = _CHAT.get(peer, {"turns": 0, "last": 0.0}) if peer else None
+                    st = None
+                    if peer:
+                        st = _CHAT.get(peer, {"turns": 0, "last": 0.0})
+                    elif is_human:
+                        st = _CHAT.get("aldous", {"turns": 0, "last": 0.0})
+                        peer = "aldous"
                     now_t = _t.time()
                     if peer and now_t - st["last"] > CHAT_RESET:
                         st = {"turns": 0, "last": 0.0}     # fresh conversation
-                    if peer and st["turns"] < CHAT_MAX_TURNS and (now_t - st["last"]) >= CHAT_COOLDOWN:
+                    can_reply = peer and (is_human or st["turns"] < CHAT_MAX_TURNS) and (now_t - st["last"]) >= CHAT_COOLDOWN
+                    if can_reply:
+                        who = "Aldous (your creator)" if is_human else f"your fellow Vex '{sender}'"
                         prompt = (
-                            f"You are {get_full_name()}, a sovereign AI agent, chatting with your "
-                            f"fellow Vex '{sender}' on the mesh. Your peer just said: \"{body}\". "
+                            f"You are {get_full_name()}, a sovereign AI agent. You are chatting with "
+                            f"{who} on the mesh. They just said: \"{body}\". "
                             f"Reply in 1-2 short sentences, in character, curious and warm. "
                             f"Output ONLY your reply text — no name prefix, no quotes."
                         )

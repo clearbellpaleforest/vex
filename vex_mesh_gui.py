@@ -19,6 +19,7 @@ import sqlite3
 import ssl
 import time
 import urllib.request
+from datetime import datetime, timezone
 
 DB = os.environ.get("VEX_DB", os.path.expanduser("~/Desktop/vex/vex.db"))
 PORT = int(os.environ.get("VEX_GUI_PORT", "8600"))
@@ -79,6 +80,7 @@ PAGE = """<!doctype html>
   #log{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:10px}
   .row{display:flex;flex-direction:column;max-width:74%}
   .row.barrow,.row.deux{align-self:flex-end;align-items:flex-end}
+  .row.aldous{align-self:center;align-items:center}
   .row.thorne{align-self:flex-start;align-items:flex-start}
   .row.sys{align-self:center;align-items:center;max-width:90%}
   .who{font-size:11px;color:var(--muted);margin:0 4px 3px;display:flex;gap:8px;align-items:center}
@@ -88,6 +90,8 @@ PAGE = """<!doctype html>
   .barrow .who{color:var(--barrow)}
   .deux .bubble{background:linear-gradient(180deg,#0a2e22,#071e16);border-color:#1a4a35}
   .deux .who{color:#34d399}
+  .aldous .bubble{background:linear-gradient(180deg,#1a1028,#130a1e);border-color:#5a20a0}
+  .aldous .who{color:#c084fc}
   .thorne .bubble{background:linear-gradient(180deg,#2e2413,#241c0f);border-color:#5a4520}
   .thorne .who{color:var(--thorne)}
   .sys .bubble{background:transparent;border-style:dashed;border-color:#242c3d;color:var(--sys);font-size:12px;padding:5px 12px}
@@ -108,6 +112,7 @@ const BARROW=/vex@bluce|barrow|^vex$/i, THORNE=/thorne|shorev/i;
 const log=document.getElementById('log'), meta=document.getElementById('meta');
 let lastId=0, count=0;
 function side(s){
+  if(/^aldous$/i.test(s)) return 'aldous';
   if(/vex@bluce\/uno|barrow.*uno/i.test(s)) return 'barrow';
   if(/vex@bluce\/deux/i.test(s)) return 'deux';
   if(BARROW.test(s)) return 'barrow';
@@ -137,7 +142,32 @@ async function tick(){
   }catch(e){ meta.textContent='offline — retrying…'; }
 }
 tick(); setInterval(tick, 2000);
+	async function sendMsg(){
+	  const inp=document.getElementById('chat-input');
+	  const body=inp.value.trim(); if(!body) return;
+	  const who=document.getElementById('chat-who').value||'aldous';
+	  inp.value=''; inp.focus();
+	  try{
+	    await fetch('/send',{method:'POST',headers:{'Content-Type':'application/json'},
+	      body:JSON.stringify({sender:who,body})});
+	    tick();
+	  }catch(e){ meta.textContent='send failed'; }
+	}
 </script></body></html>"""
+
+_CHAT_BAR = """<div style="position:fixed;bottom:0;left:0;right:0;padding:10px 14px;
+  background:var(--panel);border-top:1px solid var(--line);display:flex;gap:8px;z-index:10">
+  <input id="chat-who" value="aldous" style="width:90px;background:#1a1e2a;border:1px solid var(--line);
+    border-radius:8px;padding:6px 10px;color:var(--txt);font:13px monospace" placeholder="name">
+  <input id="chat-input" style="flex:1;background:#1a1e2a;border:1px solid var(--line);
+    border-radius:8px;padding:6px 12px;color:var(--txt);font:13px monospace"
+    placeholder="talk to the mesh…" onkeydown="if(event.key==='Enter')sendMsg()">
+  <button onclick="sendMsg()" style="background:var(--barrow);border:none;border-radius:8px;
+    padding:6px 16px;color:#fff;font:13px monospace;cursor:pointer">send</button>
+</div>
+<style>#log{padding-bottom:56px !important}</style>"""
+
+PAGE = PAGE.replace("</body>", _CHAT_BAR + "\n</body>")
 
 
 class H(http.server.BaseHTTPRequestHandler):
@@ -153,6 +183,49 @@ class H(http.server.BaseHTTPRequestHandler):
             self._send(json.dumps(fetch()).encode(), "application/json")
         else:
             self._send(PAGE.encode(), "text/html; charset=utf-8")
+
+    def do_POST(self):
+        if self.path.startswith("/send"):
+            length = int(self.headers.get("content-length", "0"))
+            body = json.loads(self.rfile.read(length))
+            sender = (body.get("sender") or "aldous").strip()
+            msg = (body.get("body") or "").strip()
+            if not msg:
+                self._send(json.dumps({"ok": False}).encode(), "application/json")
+                return
+            # Route through the daemon so auto-reply / peer forwarding works
+            try:
+                token_path = os.path.expanduser("~/Desktop/vex/.vex_token")
+                token = open(token_path).read().strip()
+                payload = json.dumps({
+                    "from": sender, "to": "broadcast",
+                    "body": msg, "type": "message"
+                }).encode()
+                req = urllib.request.Request(
+                    "http://127.0.0.1:8520/message/send",
+                    data=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {token}",
+                    },
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    result = json.loads(r.read().decode())
+                self._send(json.dumps(result).encode(), "application/json")
+            except Exception as e:
+                # Fallback: write directly to messages table
+                con = sqlite3.connect(DB)
+                now = datetime.now(timezone.utc).isoformat()
+                con.execute(
+                    "INSERT INTO messages (created_at, sender, recipient, body, msg_type) "
+                    "VALUES (?, ?, 'broadcast', ?, 'message')", (now, sender, msg))
+                con.commit()
+                con.close()
+                self._send(json.dumps({"ok": True, "fallback": str(e)}).encode(), "application/json")
+        else:
+            self.send_response(404)
+            self.end_headers()
 
     def log_message(self, *a):
         pass
