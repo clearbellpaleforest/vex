@@ -44,3 +44,6 @@ SAFE_ROOTS = [
 ]
 
 WORK_DIR = Path(_work)
+
+# Instance identity — used by vexcom for sender naming
+VEX_INSTANCE = os.environ.get("VEX_INSTANCE", os.uname().nodename)
