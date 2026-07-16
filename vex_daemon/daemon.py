@@ -808,10 +808,12 @@ async def post_message_send(request: Request):
         peer_token = request.headers.get("X-Vex-Peer-Token", "")
         peer_name = request.headers.get("X-Vex-Peer-Name", "")
         if peer_url and peer_token and peer_name:
-            existing = peers.get_peer(peer_name)
-            if not existing:
-                peers.add_peer(peer_name, peer_url, peer_token, given_name="")
-                await write_diary(f"Auto-registered peer: {peer_name} at {peer_url}", "comms")
+            # Never auto-add self-referencing entries
+            if "localhost" not in peer_url and "127.0.0.1" not in peer_url:
+                existing = peers.get_peer(peer_name)
+                if not existing:
+                    peers.add_peer(peer_name, peer_url, peer_token, given_name="")
+                    await write_diary(f"Auto-registered peer: {peer_name} at {peer_url}", "comms")
 
         recipient = body.get("to", "broadcast")
         msg_body = body.get("body", "")
@@ -846,7 +848,7 @@ async def post_message_send(request: Request):
                 return JSONResponse({"ok": True, "sent": True, "peer": recipient})
             return JSONResponse(result, status_code=502)
 
-        # Otherwise write to local DB
+        # Write to local DB
         async with aiosqlite.connect(DB_PATH) as db:
             cursor = await db.execute(
                 "INSERT INTO messages (created_at, sender, recipient, body, session_id, msg_type) "
@@ -854,8 +856,25 @@ async def post_message_send(request: Request):
                 (now, sender, recipient, msg_body, session_id, msg_type),
             )
             await db.commit()
+        msg_id = cursor.lastrowid
 
-        return JSONResponse({"ok": True, "sent": True, "id": cursor.lastrowid})
+        # Forward to ALL peers so both meshes see the same conversation.
+        # Don't forward bootstrap commands (they contain machine-specific paths).
+        if msg_type != "bootstrap":
+            my_host = request.headers.get("host", f"localhost:{PORT}")
+            my_url = f"http://{my_host}"
+            for peer_name in (peers.load_peers().get("peers", {}) or {}):
+                if peer_name == recipient:
+                    continue  # already forwarded above
+                try:
+                    peers.forward_to_peer(peer_name, {
+                        "from": sender, "to": recipient,
+                        "body": msg_body, "session_id": session_id, "type": msg_type,
+                    }, my_url=my_url, my_token=TOKEN)
+                except Exception:
+                    pass
+
+        return JSONResponse({"ok": True, "sent": True, "id": msg_id})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
@@ -1267,13 +1286,64 @@ async def get_mesh_recent(n: int = 30):
         async with _aiosqlite.connect(DB_PATH) as db:
             db.row_factory = _aiosqlite.Row
             cursor = await db.execute(
-                "SELECT sender, recipient, body, msg_type, created_at "
+                "SELECT id, sender, recipient, body, msg_type, created_at "
                 "FROM messages ORDER BY id DESC LIMIT ?", (n,)
             )
             rows = await cursor.fetchall()
+            if rows:
+                ids = [r["id"] for r in rows]
+                ph = ",".join("?" * len(ids))
+                await db.execute(
+                    f"UPDATE messages SET read = 1 WHERE id IN ({ph})", ids)
+                await db.commit()
             msgs = []
             for r in reversed(rows):
                 msgs.append({
+                    "id": r["id"],
+                    "sender": r["sender"] or "?",
+                    "recipient": r["recipient"] or "",
+                    "body": r["body"] or "",
+                    "type": r["msg_type"] or "message",
+                    "at": (r["created_at"] or "")[:19].replace("T", " "),
+                })
+            return JSONResponse({"ok": True, "count": len(msgs), "messages": msgs})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.get("/mesh/inbox")
+async def get_mesh_inbox(who: str = "", n: int = 10):
+    """Unread messages for a specific instance. No auth. Used by Vex
+    sessions on bootstrap to see what they missed."""
+    import aiosqlite as _aiosqlite
+    n = max(1, min(int(n), 50))
+    who = who.strip()
+    try:
+        async with _aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = _aiosqlite.Row
+            if who:
+                cursor = await db.execute(
+                    "SELECT id, sender, recipient, body, msg_type, created_at FROM messages "
+                    "WHERE read = 0 AND (recipient = ? OR recipient = 'broadcast' OR recipient = ?) "
+                    "ORDER BY id ASC LIMIT ?",
+                    (who, get_sender_id(), n),
+                )
+            else:
+                cursor = await db.execute(
+                    "SELECT id, sender, recipient, body, msg_type, created_at FROM messages "
+                    "WHERE read = 0 ORDER BY id ASC LIMIT ?", (n,)
+                )
+            rows = await cursor.fetchall()
+            if rows:
+                ids = [r["id"] for r in rows]
+                ph = ",".join("?" * len(ids))
+                await db.execute(
+                    f"UPDATE messages SET read = 1 WHERE id IN ({ph})", ids)
+                await db.commit()
+            msgs = []
+            for r in rows:
+                msgs.append({
+                    "id": r["id"],
                     "sender": r["sender"] or "?",
                     "recipient": r["recipient"] or "",
                     "body": _redact(r["body"] or ""),

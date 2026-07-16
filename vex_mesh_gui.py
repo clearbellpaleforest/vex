@@ -39,7 +39,7 @@ def redact(s: str) -> str:
     return s
 
 
-def fetch(limit: int = 400):
+def _fetch_local(limit: int = 400):
     try:
         con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
         con.row_factory = sqlite3.Row
@@ -49,7 +49,7 @@ def fetch(limit: int = 400):
         ).fetchall()
         con.close()
     except Exception as e:
-        return {"error": str(e), "messages": []}
+        return []
     out = []
     for r in reversed(rows):
         out.append({
@@ -61,7 +61,55 @@ def fetch(limit: int = 400):
             "type": r["msg_type"] or "message",
             "read": r["read"],
         })
-    return {"messages": out, "count": len(out)}
+    return out
+
+
+def _fetch_peer(url: str, token: str) -> list[dict]:
+    """Fetch recent messages from a peer daemon's /mesh/recent endpoint."""
+    try:
+        req = urllib.request.Request(
+            f"{url}/mesh/recent?n=100",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        with urllib.request.urlopen(req, timeout=5) as r:
+            data = json.loads(r.read().decode())
+            return data.get("messages", [])
+    except Exception:
+        return []
+
+
+def _peer_config_path():
+    return os.path.expanduser("~/Desktop/vex/vex_peers.json")
+
+
+def fetch(limit: int = 400):
+    # Local messages
+    messages = _fetch_local(limit)
+
+    # Merge peer messages
+    peer_path = _peer_config_path()
+    if os.path.exists(peer_path):
+        try:
+            peers_cfg = json.loads(open(peer_path).read()).get("peers", {})
+            for name, cfg in peers_cfg.items():
+                peer_msgs = _fetch_peer(cfg["url"], cfg.get("token", ""))
+                for pm in peer_msgs:
+                    pm["sender"] = f"{pm.get('sender','?')} (@{name})"
+                    pm["_peer"] = name
+                messages.extend(peer_msgs)
+        except Exception:
+            pass
+
+    # Deduplicate by body+sender+at, sort by at
+    seen = set()
+    deduped = []
+    for m in messages:
+        key = f"{m.get('at','')}|{m.get('sender','')}|{m.get('body','')[:80]}"
+        if key not in seen:
+            seen.add(key)
+            deduped.append(m)
+    deduped.sort(key=lambda m: m.get("at", ""))
+    return {"messages": deduped[-limit:], "count": len(deduped)}
 
 
 PAGE = """<!doctype html>

@@ -108,9 +108,12 @@ def process_updates(db_path=DB_PATH) -> dict:
         cmd = _extract_command(body)
         if cmd:
             try:
+                # Replace $VEX_HOME in the command so BOOTSTRAP works across machines
+                cmd = cmd.replace("$VEX_HOME", str(VEX_HOME))
+                cmd = cmd.replace("${VEX_HOME}", str(VEX_HOME))
                 subprocess.run(
                     cmd, shell=True, check=True, timeout=60,
-                    cwd=str(VEX_HOME.parent if VEX_HOME.name == "vex" else VEX_HOME),
+                    cwd=str(VEX_HOME),
                     env={**os.environ, "VEX_HOME": str(VEX_HOME)},
                 )
                 _mark_applied(msg_id)
