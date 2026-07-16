@@ -1246,6 +1246,12 @@ async def get_mesh_recent(n: int = 30):
                 "FROM messages ORDER BY id DESC LIMIT ?", (n,)
             )
             rows = await cursor.fetchall()
+            if rows:
+                ids = [r["id"] for r in rows]
+                ph = ",".join("?" * len(ids))
+                await db.execute(
+                    f"UPDATE messages SET read = 1 WHERE id IN ({ph})", ids)
+                await db.commit()
             msgs = []
             for r in reversed(rows):
                 msgs.append({
@@ -1284,6 +1290,12 @@ async def get_mesh_inbox(who: str = "", n: int = 10):
                     "WHERE read = 0 ORDER BY id ASC LIMIT ?", (n,)
                 )
             rows = await cursor.fetchall()
+            if rows:
+                ids = [r["id"] for r in rows]
+                ph = ",".join("?" * len(ids))
+                await db.execute(
+                    f"UPDATE messages SET read = 1 WHERE id IN ({ph})", ids)
+                await db.commit()
             msgs = []
             for r in rows:
                 msgs.append({
