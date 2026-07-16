@@ -722,10 +722,12 @@ async def post_message_send(request: Request):
         peer_token = request.headers.get("X-Vex-Peer-Token", "")
         peer_name = request.headers.get("X-Vex-Peer-Name", "")
         if peer_url and peer_token and peer_name:
-            existing = peers.get_peer(peer_name)
-            if not existing:
-                peers.add_peer(peer_name, peer_url, peer_token, given_name="")
-                await write_diary(f"Auto-registered peer: {peer_name} at {peer_url}", "comms")
+            # Never auto-add self-referencing entries
+            if "localhost" not in peer_url and "127.0.0.1" not in peer_url:
+                existing = peers.get_peer(peer_name)
+                if not existing:
+                    peers.add_peer(peer_name, peer_url, peer_token, given_name="")
+                    await write_diary(f"Auto-registered peer: {peer_name} at {peer_url}", "comms")
 
         recipient = body.get("to", "broadcast")
         msg_body = body.get("body", "")
