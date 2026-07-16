@@ -759,7 +759,7 @@ async def post_message_send(request: Request):
                 return JSONResponse({"ok": True, "sent": True, "peer": recipient})
             return JSONResponse(result, status_code=502)
 
-        # Otherwise write to local DB
+        # Write to local DB
         async with aiosqlite.connect(DB_PATH) as db:
             cursor = await db.execute(
                 "INSERT INTO messages (created_at, sender, recipient, body, session_id, msg_type) "
@@ -767,8 +767,25 @@ async def post_message_send(request: Request):
                 (now, sender, recipient, msg_body, session_id, msg_type),
             )
             await db.commit()
+        msg_id = cursor.lastrowid
 
-        return JSONResponse({"ok": True, "sent": True, "id": cursor.lastrowid})
+        # Forward to ALL peers so both meshes see the same conversation.
+        # Don't forward bootstrap commands (they contain machine-specific paths).
+        if msg_type != "bootstrap":
+            my_host = request.headers.get("host", f"localhost:{PORT}")
+            my_url = f"http://{my_host}"
+            for peer_name in (peers.load_peers().get("peers", {}) or {}):
+                if peer_name == recipient:
+                    continue  # already forwarded above
+                try:
+                    peers.forward_to_peer(peer_name, {
+                        "from": sender, "to": recipient,
+                        "body": msg_body, "session_id": session_id, "type": msg_type,
+                    }, my_url=my_url, my_token=TOKEN)
+                except Exception:
+                    pass
+
+        return JSONResponse({"ok": True, "sent": True, "id": msg_id})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
