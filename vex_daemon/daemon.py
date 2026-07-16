@@ -1249,6 +1249,7 @@ async def get_mesh_recent(n: int = 30):
             msgs = []
             for r in reversed(rows):
                 msgs.append({
+                    "id": r["id"],
                     "sender": r["sender"] or "?",
                     "recipient": r["recipient"] or "",
                     "body": r["body"] or "",
@@ -1272,20 +1273,21 @@ async def get_mesh_inbox(who: str = "", n: int = 10):
             db.row_factory = _aiosqlite.Row
             if who:
                 cursor = await db.execute(
-                    "SELECT sender, recipient, body, msg_type, created_at FROM messages "
+                    "SELECT id, sender, recipient, body, msg_type, created_at FROM messages "
                     "WHERE read = 0 AND (recipient = ? OR recipient = 'broadcast' OR recipient = ?) "
                     "ORDER BY id ASC LIMIT ?",
                     (who, get_sender_id(), n),
                 )
             else:
                 cursor = await db.execute(
-                    "SELECT sender, recipient, body, msg_type, created_at FROM messages "
+                    "SELECT id, sender, recipient, body, msg_type, created_at FROM messages "
                     "WHERE read = 0 ORDER BY id ASC LIMIT ?", (n,)
                 )
             rows = await cursor.fetchall()
             msgs = []
             for r in rows:
                 msgs.append({
+                    "id": r["id"],
                     "sender": r["sender"] or "?",
                     "recipient": r["recipient"] or "",
                     "body": r["body"] or "",
