@@ -20,6 +20,9 @@ vex_fen_agent_key.txt
 *.pem
 *.key
 
+# ── Log files ──
+*.log
+
 # ── Binary transfer artifacts (build/regenerate locally, never commit) ──
 *.tar.gz
 
