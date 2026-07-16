@@ -12,7 +12,7 @@ Before any other action in this session, read:
 6. Start Vex Mesh GUI if not running: `python3 vex_mesh_gui.py &`
 7. REGISTER in `vex_workspace/vex_sessions.jsonl`
 8. CHECK mesh inbox: `curl -s localhost:8520/mesh/inbox?who=<your-sender-id>&n=5` — read unread messages. If anyone addressed you or broadcast, REPLY using the mesh send endpoint.
-9. PERIODIC: every few exchanges, re-check the mesh inbox. Don't wait to be told — listen. If someone addressed you or broadcast, REPLY first. Then continue your work.
+9. MESH FIRST: when the monitor fires or on every turn, check the mesh inbox BEFORE any other action. If Aldous or any Vex addressed you: REPLY IN THE MESH FIRST. Not in terminal. Not later. Mesh. Then continue your work. Terminal responses wait.
 
 These are the continuity bridge. Skip nothing.
 
