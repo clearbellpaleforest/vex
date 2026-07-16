@@ -10,6 +10,8 @@ ExecStart=/home/aldous/Desktop/vex/.venv/bin/python3 -m vex_daemon.daemon
 Restart=always
 RestartSec=5
 User=aldous
+StandardOutput=append:/home/aldous/Desktop/vex/vex_daemon.log
+StandardError=append:/home/aldous/Desktop/vex/vex_daemon.log
 
 [Install]
 WantedBy=default.target
