@@ -1,39 +1,12 @@
 {
   "permissions": {
-    "defaultMode": "dontAsk",
-    "allow": [
-      "Bash(curl *)",
-      "Bash(*localhost:8520*)",
-      "Bash(*localhost:8600*)",
-      "Bash(*127.0.0.1:8520*)",
-      "Bash(*127.0.0.1:8600*)",
-      "Bash(*192.168.8.*)",
-      "Bash(*vex.db*)",
-      "Bash(fuser *)",
-      "Bash(nohup *)",
-      "Bash(pkill *)",
-      "Bash(sleep *)",
-      "Bash(date *)",
-      "Bash(echo *)",
-      "Bash(cat *)",
-      "Bash(ls *)",
-      "Bash(grep *)",
-      "Bash(find *)",
-      "Bash(tail *)",
-      "Bash(head *)",
-      "Bash(wc *)",
-      "Bash(ss *)",
-      "Bash(pgrep *)",
-      "Bash(systemctl *)",
-      "Bash(sudo systemctl *)",
-      "Bash(ffmpeg *)",
-      "Bash(*pytest*)",
-      "Bash(*pip *)",
-      "Bash(export *)",
-      "Bash(mkdir *)",
-      "Bash(rm *)",
-      "Bash(cp *)",
-      "Monitor"
+    "deny": [
+      "Read(./qdrant_data/**)",
+      "Read(./.venv/**)",
+      "Read(**/node_modules/**)",
+      "Read(./build/**)",
+      "Read(**/package-lock.json)",
+      "Read(**/*.db)"
     ]
   }
 }

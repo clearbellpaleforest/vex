@@ -8,7 +8,6 @@ one envelope and one authoritative store (the `messages` table), keeps
 the same `mem_fts` memory index (src='message'), so recall()/reconstruct() see
 comms as memory. Comms and memory are one log.
 
-Chamberlain: one envelope, one send, one inbox, one log. Idempotent reindex.
 """
 
 import hashlib

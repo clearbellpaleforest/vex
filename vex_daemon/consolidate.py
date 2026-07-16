@@ -9,7 +9,6 @@ Model-free by design: the digest is deterministic extraction (dates, first-line
 summaries, decisions). A live Vex session can rewrite `text` without changing
 the record shape or any caller.
 
-Chamberlain: one consolidation job, one summaries table, idempotent by bucket.
 """
 
 import json

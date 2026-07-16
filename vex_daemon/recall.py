@@ -11,9 +11,8 @@ recall(query, k) ranks matches by relevance, not recency:
 
 Empty / no-match query -> most-recent entries (graceful default).
 
-Chamberlain: one recall function. The daemon stays model-free — coverage-first
-lexical ranking is correct without one, and there is no in-daemon model by design
-(Vex is the live sessions, not the daemon).
+(A2/brain): add it as a third relevance signal and fuse with RRF once a model
+exists. Until then, coverage-first lexical ranking is correct and model-free.
 """
 
 import json
@@ -72,12 +71,8 @@ def _hydrate(conn, refs):
     return out
 
 
-def recall(query: str, k: int = 5, src: str = "", db_path=DB_PATH) -> list[dict]:
-    """Return up to k memory entries most relevant to `query`, whole-history.
-
-    If `src` is provided, only entries with that source are considered
-    (e.g. src='memory' for episodic memory, src='message' for comms).
-    """
+def recall(query: str, k: int = 5, db_path=DB_PATH) -> list[dict]:
+    """Return up to k memory entries most relevant to `query`, whole-history."""
     conn = sqlite3.connect(str(db_path))
     try:
         ensure_schema(conn)
@@ -106,9 +101,6 @@ def recall(query: str, k: int = 5, src: str = "", db_path=DB_PATH) -> list[dict]
         for ref in ordered:
             item = hydrated.get(ref)
             if item:
-                # Filter by source if requested
-                if src and item.get("src", "") != src:
-                    continue
                 item["coverage"] = cov.get(ref, 0)
                 results.append(item)
         return results

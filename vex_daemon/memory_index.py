@@ -6,7 +6,6 @@ vex_memory/*.jsonl file, every session summary across every file is indexed
 into a single SQLite FTS5 table inside vex.db, so recall() can query the
 whole history.
 
-Chamberlain: one store (vex.db), one index (mem_fts), one build function.
 No second database, no overlapping stores. Idempotent per source.
 """
 
