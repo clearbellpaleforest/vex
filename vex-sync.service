@@ -1,0 +1,12 @@
+[Unit]
+Description=Vex Fleet Sync — git pull from GitHub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=aldous
+WorkingDirectory=/home/aldous/vex
+ExecStart=/usr/bin/git pull origin master
+StandardOutput=append:/home/aldous/vex/vex_sync.log
+StandardError=append:/home/aldous/vex/vex_sync.log
