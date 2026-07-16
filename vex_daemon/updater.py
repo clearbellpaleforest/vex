@@ -8,6 +8,10 @@ that this daemon can fetch and apply.
 
 Runs on daemon startup and periodically via the heartbeat tick. Idempotent —
 each message is processed at most once, tracked by message ID.
+
+Disabled by default: executing commands or applying bundles from the bus means
+any peer (or anyone who can write a peer's bus file) can run code on this box.
+Set VEX_UPDATER_ENABLE=1 to opt in explicitly.
 """
 
 import json
@@ -87,6 +91,8 @@ def process_updates(db_path=DB_PATH) -> dict:
 
     Returns a summary of actions taken.
     """
+    if os.environ.get("VEX_UPDATER_ENABLE", "0") != "1":
+        return {"updated": False, "reason": "updater disabled (VEX_UPDATER_ENABLE != 1)"}
     messages = _find_bootstrap_messages(db_path)
     if not messages:
         return {"updated": False, "reason": "no pending updates"}

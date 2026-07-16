@@ -1,0 +1,18 @@
+[Unit]
+Description=Vex Daemon — mesh message bus
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aldous
+WorkingDirectory=/home/aldous/vex
+Environment=VEX_HOST=0.0.0.0
+ExecStart=/home/aldous/vex/.venv/bin/python3 -m vex_daemon.daemon
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/aldous/vex/vex_daemon.log
+StandardError=append:/home/aldous/vex/vex_daemon.log
+
+[Install]
+WantedBy=multi-user.target

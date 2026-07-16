@@ -65,6 +65,23 @@ def ensure_bus_seen(conn: sqlite3.Connection) -> None:
     )
 
 
+def ensure_messages(conn: sqlite3.Connection) -> None:
+    """Same DDL as daemon.init_db() — vexcom must work on a fresh DB too
+    (tests, mesh-GUI direct-write fallback, CLI use without the daemon)."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            sender TEXT NOT NULL,
+            recipient TEXT NOT NULL DEFAULT 'broadcast',
+            body TEXT NOT NULL,
+            session_id TEXT,
+            msg_type TEXT DEFAULT 'message',
+            read INTEGER DEFAULT 0
+        )
+    """)
+
+
 def _index_message(conn, ref: str, e: dict) -> None:
     conn.execute("DELETE FROM mem_fts WHERE ref = ?", (ref,))
     conn.execute(
@@ -94,6 +111,7 @@ def send(env: dict, db_path=DB_PATH) -> dict:
     try:
         ensure_schema(conn)
         ensure_bus_seen(conn)
+        ensure_messages(conn)
         cur = conn.execute(
             "INSERT INTO messages (created_at, sender, recipient, body, session_id, msg_type) "
             "VALUES (?,?,?,?,?,?)",
@@ -170,6 +188,7 @@ def ingest_bus(db_path=DB_PATH) -> int:
     try:
         ensure_schema(conn)
         ensure_bus_seen(conn)
+        ensure_messages(conn)
         seen = {r[0] for r in conn.execute("SELECT hash FROM bus_seen")}
         n = 0
         with open(BUS_PATH, "r", encoding="utf-8") as f:

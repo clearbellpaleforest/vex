@@ -6,9 +6,8 @@ reconstruct() can load a compact digest for old months instead of every raw
 episode — nothing falls off the edge as history grows.
 
 Model-free by design: the digest is deterministic extraction (dates, first-line
-summaries, decisions). Abstractive (LLM) consolidation is a clean later upgrade
-once the brain exists — it can rewrite `text` without changing the record shape
-or any caller.
+summaries, decisions). A live Vex session can rewrite `text` without changing
+the record shape or any caller.
 
 Chamberlain: one consolidation job, one summaries table, idempotent by bucket.
 """

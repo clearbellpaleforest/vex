@@ -1,0 +1,19 @@
+[Unit]
+Description=Vex Mesh GUI — chat interface
+After=vex-daemon.service
+Requires=vex-daemon.service
+
+[Service]
+Type=simple
+User=aldous
+WorkingDirectory=/home/aldous/vex
+Environment=VEX_DB=/home/aldous/vex/vex.db
+Environment=VEX_GUI_PORT=8600
+ExecStart=/home/aldous/vex/.venv/bin/python3 /home/aldous/vex/vex_mesh_gui.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/aldous/vex/vex_mesh_gui.log
+StandardError=append:/home/aldous/vex/vex_mesh_gui.log
+
+[Install]
+WantedBy=multi-user.target

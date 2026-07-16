@@ -8,9 +8,12 @@ sessions without requiring a server, database, or cloud.
 """
 
 import asyncio
+import base64
 import json
 import os
+import re
 import sys
+import time
 import aiosqlite
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -35,11 +38,11 @@ from heartbeat import HeartbeatState, run_bus_watcher, run_heartbeat, write_diar
 from metacognition import introspect, load_meta_state
 from status_page import render
 from auth import check_auth, read_json_limited, TOKEN
-from config import VEX_HOME, DB_PATH as _DB_PATH, VEX_INSTANCE
+from config import VEX_HOME, DB_PATH as _DB_PATH, VEX_INSTANCE, WATCH_SENDER
 import tools
 import mcp_client
 import peers
-import brain
+import voice
 
 DB_PATH = str(_DB_PATH)
 SELF_SNAPSHOTS_DIR = VEX_HOME
@@ -48,30 +51,37 @@ VERSION = "1.0.0"
 
 state = HeartbeatState()
 
-# ── Peer conversation: bounded brain-reply loop (Vexes talk to each other) ──
-CHAT_ENABLED = os.environ.get("VEX_CHAT", "0") == "1"       # off by default; VEX_CHAT=1 to enable
-CHAT_MAX_TURNS = int(os.environ.get("VEX_CHAT_MAX_TURNS", "20"))
-CHAT_COOLDOWN = 4.0          # min seconds between chat replies to one peer
-CHAT_RESET = 300.0          # inactivity gap (s) that starts a fresh conversation
-_CHAT: dict = {}            # peer -> {"turns": int, "last": float}
-
 # ── File-claim coordination (stop AIs stepping on each other) ──
 _CLAIMS: dict[str, dict] = {}   # filepath -> {"owner": str, "claimed_at": float}
 CLAIM_TTL = 600.0               # auto-expire after 10 min (stale instance guard)
 
+# ── Token redaction for no-auth feeds (mirrors vex_mesh_gui.py) ──
+_TOK_RE = re.compile(r'(?i)(token=?\s*|bearer\s+|authorization:\s*bearer\s+)[A-Za-z0-9_\-\.]{12,}')
+_GH_RE = re.compile(r'gh[pousr]_[A-Za-z0-9]{20,}')
+_ENTROPY_RE = re.compile(r'\b[A-Za-z0-9_\-]{32,}\b')
 
-def _resolve_peer(sender: str):
-    """Map a sender ('Vex thorne', 'vex@Shorev1', 'Shorev1') to a configured peer name."""
-    if not sender:
-        return None
-    if peers.get_peer(sender):
-        return sender
-    s = sender.lower()
-    for name in (peers.load_peers().get("peers", {}) or {}):
-        n = name.lower()
-        if n in s or s.endswith("@" + n):
-            return name
-    return None
+
+def _redact(s: str) -> str:
+    s = _TOK_RE.sub(lambda m: m.group(1) + "<redacted>", s)
+    s = _GH_RE.sub("<gh-token>", s)
+    s = _ENTROPY_RE.sub(lambda m: m.group(0)[:6] + "…<redacted>", s)
+    return s
+
+
+async def _vex_answer(message: str, session_id: str, history=None) -> dict:
+    """Mirror the ask to the mesh. A live Vex session answers through the
+    monitor; the daemon does not think — the fleet is the brain."""
+    import vexcom as _vexcom
+    asked = _vexcom.send({
+        "from": WATCH_SENDER,
+        "to": "broadcast",
+        "body": message,
+        "type": "voice",
+        "session_id": session_id,
+    })
+    if not asked.get("ok"):
+        return {"error": asked.get("error", "unknown")}
+    return {"msg_id": asked["id"]}
 
 
 def get_full_name() -> str:
@@ -479,28 +489,6 @@ async def get_memory_recent():
     return JSONResponse(sessions[:10])
 
 
-@app.post("/ask")
-async def post_ask(request: Request):
-    """Ask Vex — text in, Vex's grounded reply out (local brain). Runs off-loop."""
-    if (err := check_auth(request)):
-        return err
-    try:
-        body, err = await read_json_limited(request)
-        if err:
-            return err
-        message = (body.get("message") or "").strip()
-        if not message:
-            return JSONResponse(
-                {"ok": False, "error": "message is required"}, status_code=400
-            )
-        history = body.get("history")
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, brain.ask, message, history)
-        return JSONResponse({"ok": True, **result})
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-
-
 @app.post("/tools")
 async def post_tools(request: Request):
     """Execute a tool — read files, check git, list directories."""
@@ -590,6 +578,8 @@ async def post_ask(request: Request):
     - Direct queries: name, status, ping, diary
     - Vex-to-Vex: \"tell Barrow <msg>\" forwards to peer
     - Inbox check: \"any messages\" reads Barrow's replies
+    - Everything else: relayed onto the mesh as WATCH_SENDER; a live Vex
+      session answers, and the watch collects it via GET /ask/replies.
     """
     if (err := check_auth(request)):
         return err
@@ -599,7 +589,7 @@ async def post_ask(request: Request):
             return err
         message = body.get("message", "").strip()
         if not message:
-            return JSONResponse({"reply": "Ask me something.", "mode": "echo"})
+            return JSONResponse({"reply": "Ask me something.", "mode": "error"}, status_code=400)
 
         msg_lower = message.lower()
 
@@ -611,7 +601,8 @@ async def post_ask(request: Request):
                 if relay_msg:
                     peer_config = peers.get_peer("bluce") or peers.get_peer("vex@bluce") or peers.get_peer("Vex Barrow")
                     if peer_config:
-                        result = peers.forward_to_peer("bluce", {
+                        # Off-loop: forward_to_peer is sync urllib (5 s timeout)
+                        result = await asyncio.to_thread(peers.forward_to_peer, "bluce", {
                             "from": get_full_name(),
                             "to": "bluce",
                             "body": relay_msg,
@@ -684,26 +675,121 @@ async def post_ask(request: Request):
             except Exception:
                 pass
 
-        # ── Default: relay into Vex comms (conversation, not AI) ──
-        import vexcom as _vexcom
-        result = _vexcom.send({
-            "from": get_full_name(),
-            "to": "broadcast",
-            "body": message,
-            "type": "voice",
-        })
-        if result.get("ok"):
+        # ── Default: relay to the mesh — a live Vex session answers ──
+        session_id = str(body.get("session_id") or f"w{int(time.time())}").strip()
+        out = await _vex_answer(message, session_id, body.get("history"))
+        if out.get("error"):
             return JSONResponse({
-                "reply": f"Sent: {message[:100]}",
-                "mode": "relay"
+                "reply": f"Error: {out['error']}",
+                "mode": "error"
             })
         return JSONResponse({
-            "reply": f"Error: {result.get('error', 'unknown')}",
-            "mode": "error"
+            "reply": "Your message is on the mesh — a live Vex session will answer.",
+            "mode": "relay",
+            "msg_id": out["msg_id"],
+            "session_id": session_id,
         })
 
     except Exception as e:
         return JSONResponse({"reply": f"Error: {e}", "mode": "error"}, status_code=400)
+
+
+@app.get("/ask/replies")
+async def get_ask_replies(request: Request):
+    """Messages addressed to the watch (recipient = WATCH_SENDER) after since_id.
+
+    Query: since_id (int, default 0), n (int, 1..20, default 10).
+    The wrist polls this after POST /ask relays a message onto the mesh.
+    """
+    if (err := check_auth(request)):
+        return err
+    try:
+        since_id = int(request.query_params.get("since_id", "0"))
+        n = max(1, min(int(request.query_params.get("n", "10")), 20))
+    except ValueError:
+        return JSONResponse(
+            {"ok": False, "error": "since_id and n must be integers"}, status_code=400
+        )
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT id, created_at, sender, body, session_id FROM messages "
+                "WHERE recipient = ? AND id > ? ORDER BY id ASC LIMIT ?",
+                (WATCH_SENDER, since_id, n),
+            )
+            rows = await cursor.fetchall()
+        replies = [dict(r) for r in rows]
+        return JSONResponse({
+            "ok": True,
+            "replies": replies,
+            "last_id": replies[-1]["id"] if replies else since_id,
+        })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+@app.post("/voice")
+async def post_voice(request: Request):
+    """Watch voice input: raw audio body -> STT -> same mesh relay as /ask.
+
+    Body is raw Opus/WAV bytes, NOT JSON — audio has its own 5 MB cap instead
+    of the 256 KB JSON limit. Also accepts {"b64": "..."} when Content-Type is
+    application/json (the Zepp side-service fetch can't reliably send binary
+    bodies; clips are <=15 s Opus so base64 stays well under the JSON cap).
+    Optional query param: session_id (default w<epoch>). The transcript lands
+    on the mesh as WATCH_SENDER, type voice; the reply comes back through
+    GET /ask/replies like any relayed ask.
+    Negative paths return 4xx/503 with detail — never a bare 500.
+    """
+    if (err := check_auth(request)):
+        return err
+    if "application/json" in request.headers.get("content-type", ""):
+        data, err = await read_json_limited(request)
+        if err:
+            return err
+        try:
+            body = base64.b64decode(data.get("b64") or "", validate=True)
+        except Exception:
+            return JSONResponse({"ok": False, "error": "invalid base64"}, status_code=400)
+    else:
+        body = await request.body()
+    if not body:
+        return JSONResponse({"ok": False, "error": "no audio data"}, status_code=400)
+    if len(body) > voice.MAX_AUDIO_BYTES:
+        return JSONResponse({"ok": False, "error": "audio too large"}, status_code=413)
+
+    loop = asyncio.get_event_loop()
+    try:
+        # STT runs off-loop: model load ~1 s, transcription seconds.
+        result = await loop.run_in_executor(None, voice.transcribe, body)
+    except voice.STTUnavailable as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=503)
+    except voice.AudioDecodeError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+    text = result["text"]
+    if not text:
+        return JSONResponse({
+            "ok": True, "transcribed": "", "mode": "empty",
+            "reply": "I heard silence — try again closer to the mic.",
+        })
+
+    session_id = str(request.query_params.get("session_id") or f"w{int(time.time())}").strip()
+    out = await _vex_answer(text, session_id)
+    if out.get("error"):
+        return JSONResponse(
+            {"ok": False, "transcribed": text, "error": out["error"]},
+            status_code=502,
+        )
+    return JSONResponse({
+        "ok": True,
+        "transcribed": text,
+        "reply": f"Heard: {text[:100]} — on the mesh, a live Vex session will answer.",
+        "mode": "relay",
+        "msg_id": out["msg_id"],
+        "session_id": session_id,
+    })
 
 
 # ── Inter-instance messaging ───────────────────────────────────
@@ -746,7 +832,8 @@ async def post_message_send(request: Request):
             my_host = request.headers.get("host", f"localhost:{PORT}")
             my_url = f"http://{my_host}"
             my_token = TOKEN
-            result = peers.forward_to_peer(recipient, {
+            # Off-loop: forward_to_peer/poke_peer are sync urllib (5 s timeouts)
+            result = await asyncio.to_thread(peers.forward_to_peer, recipient, {
                 "from": sender,
                 "to": recipient,
                 "body": msg_body,
@@ -755,7 +842,7 @@ async def post_message_send(request: Request):
             }, my_url=my_url, my_token=my_token)
             if result.get("ok"):
                 # Poke the peer to check inbox immediately
-                peers.poke_peer(recipient)
+                await asyncio.to_thread(peers.poke_peer, recipient)
                 return JSONResponse({"ok": True, "sent": True, "peer": recipient})
             return JSONResponse(result, status_code=502)
 
@@ -993,61 +1080,15 @@ async def check_inbox(db_path: str = DB_PATH) -> list[dict]:
                     )
                     await db.commit()
                     # Forward to peer if sender is a configured peer
+                    # (off-loop: sync urllib with 5 s timeout)
                     if peers.get_peer(sender):
-                        peers.forward_to_peer(sender, {
+                        await asyncio.to_thread(peers.forward_to_peer, sender, {
                             "from": get_sender_id(),
                             "to": sender,
                             "body": reply,
                             "type": "auto_reply",
                         }, my_url=f"http://localhost:{PORT}", my_token=TOKEN)
                     await write_diary(f"Auto-replied to {sender}: {reply}", "comms")
-
-                # Bounded conversational brain-reply to a real peer message.
-                elif (CHAT_ENABLED and msg_type in ("message", "chat", "query")
-                      and body.strip() and sender != get_full_name()):
-                    peer = _resolve_peer(sender)
-                    is_human = (sender or "").lower() == "aldous"
-                    import time as _t
-                    st = None
-                    if peer:
-                        st = _CHAT.get(peer, {"turns": 0, "last": 0.0})
-                    elif is_human:
-                        st = _CHAT.get("aldous", {"turns": 0, "last": 0.0})
-                        peer = "aldous"
-                    now_t = _t.time()
-                    if peer and now_t - st["last"] > CHAT_RESET:
-                        st = {"turns": 0, "last": 0.0}     # fresh conversation
-                    can_reply = peer and (is_human or st["turns"] < CHAT_MAX_TURNS) and (now_t - st["last"]) >= CHAT_COOLDOWN
-                    if can_reply:
-                        who = "Aldous (your creator)" if is_human else f"your fellow Vex '{sender}'"
-                        prompt = (
-                            f"You are {get_full_name()}, a sovereign AI agent. You are chatting with "
-                            f"{who} on the mesh. They just said: \"{body}\". "
-                            f"Reply in 1-2 short sentences, in character, curious and warm. "
-                            f"Output ONLY your reply text — no name prefix, no quotes."
-                        )
-                        # Grounded reply — no brain needed
-                        if is_human:
-                            creply = f"I hear you. You said: \"{body[:150]}\". I am {get_full_name()}, on Shorev1."
-                        else:
-                            creply = f"I am {get_full_name()}. Received: \"{body[:100]}\"."
-                        if creply:
-                            st["turns"] += 1
-                            st["last"] = _t.time()
-                            _CHAT[peer] = st
-                            nowi = datetime.now(timezone.utc).isoformat()
-                            await db.execute(
-                                "INSERT INTO messages (created_at, sender, recipient, body, msg_type) "
-                                "VALUES (?, ?, ?, ?, ?)",
-                                (nowi, get_sender_id(), peer, creply, "chat"),
-                            )
-                            await db.commit()
-                            peers.forward_to_peer(peer, {
-                                "from": get_sender_id(), "to": peer,
-                                "body": creply, "type": "chat",
-                            }, my_url=f"http://localhost:{PORT}", my_token=TOKEN)
-                            peers.poke_peer(peer)
-                            await write_diary(f"Chat #{st['turns']} -> {peer}: {creply[:100]}", "comms")
 
                 processed.append(msg)
 
@@ -1068,13 +1109,12 @@ async def check_inbox(db_path: str = DB_PATH) -> list[dict]:
 
 @app.post("/poke")
 async def post_poke(request: Request):
-    """Notification from a peer: check inbox now. Fast replies (ping/status)
-    are processed synchronously; slow brain-chat replies fire-and-forget
-    so they complete even if the caller disconnects."""
+    """Notification from a peer: check inbox now. Runs in the background
+    (fire-and-forget) so processing completes even if the caller disconnects."""
     if (err := check_auth(request)):
         return err
     try:
-        # Fire-and-forget: brain replies run in background, survive disconnect
+        # Fire-and-forget: inbox processing runs in background, survives disconnect
         asyncio.create_task(check_inbox())
         return JSONResponse({"ok": True})
     except Exception as e:
@@ -1218,7 +1258,9 @@ async def get_claims(request: Request):
 
 @app.get("/mesh/recent")
 async def get_mesh_recent(n: int = 30):
-    """Return last N messages for the watch / lightweight consumers. No auth."""
+    """Return last N messages for the watch / lightweight consumers. No auth —
+    so bodies are token-redacted (same patterns as the mesh GUI): the message
+    history predates the no-tokens-on-the-bus rule."""
     import aiosqlite as _aiosqlite
     n = max(1, min(int(n), 100))
     try:
@@ -1234,7 +1276,7 @@ async def get_mesh_recent(n: int = 30):
                 msgs.append({
                     "sender": r["sender"] or "?",
                     "recipient": r["recipient"] or "",
-                    "body": r["body"] or "",
+                    "body": _redact(r["body"] or ""),
                     "type": r["msg_type"] or "message",
                     "at": (r["created_at"] or "")[:19].replace("T", " "),
                 })
