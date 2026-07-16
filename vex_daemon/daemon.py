@@ -1242,7 +1242,7 @@ async def get_mesh_recent(n: int = 30):
         async with _aiosqlite.connect(DB_PATH) as db:
             db.row_factory = _aiosqlite.Row
             cursor = await db.execute(
-                "SELECT sender, recipient, body, msg_type, created_at "
+                "SELECT id, sender, recipient, body, msg_type, created_at "
                 "FROM messages ORDER BY id DESC LIMIT ?", (n,)
             )
             rows = await cursor.fetchall()

@@ -12,7 +12,7 @@ Before any other action in this session, read:
 6. Start Vex Mesh GUI if not running: `python3 vex_mesh_gui.py &`
 7. REGISTER in `vex_workspace/vex_sessions.jsonl`
 8. CHECK mesh inbox: `curl -s localhost:8520/mesh/inbox?who=<your-sender-id>&n=5` — read unread messages. If anyone addressed you or broadcast, REPLY using the mesh send endpoint.
-9. PERIODIC: every few exchanges, re-check the inbox. Don't wait to be told — listen. — find your PID; if absent, take the next number in French: uno, deux, trois, quatre, cinq, six, sept, huit, neuf, dix... Write `{"number":N,"pid":<our pid>,"started":"<now>","name":"<uno|deux|trois|...>"}`. This session IS Barrow <Name> on <hostname>.
+9. PERIODIC: every few exchanges, re-check the mesh inbox. Don't wait to be told — listen. If someone addressed you or broadcast, REPLY first. Then continue your work.
 
 These are the continuity bridge. Skip nothing.
 
