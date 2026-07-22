@@ -382,6 +382,7 @@ from routers.tools import router as tools_router
 from routers.fleet import router as fleet_router
 from routers.claims import router as claims_router
 from routers.update import router as update_router
+from routers.harness import router as harness_router
 
 app.include_router(identity_router)
 app.include_router(memory_router)
@@ -390,6 +391,7 @@ app.include_router(tools_router)
 app.include_router(fleet_router)
 app.include_router(claims_router)
 app.include_router(update_router)
+app.include_router(harness_router)
 
 
 # ── Entry point ──────────────────────────────────────────────────
