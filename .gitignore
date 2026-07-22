@@ -4,6 +4,10 @@ __pycache__/
 *.pyc
 .DS_Store
 
+# ── Node modules ──
+node_modules/
+package-lock.json
+
 # ── Python build artifacts ──
 build/
 dist/
