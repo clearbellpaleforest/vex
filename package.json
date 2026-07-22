@@ -1,0 +1,15 @@
+{
+  "name": "vex",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Barrow Vex — sovereign AI agent. Playwright for browser automation and testing.",
+  "devDependencies": {
+    "@playwright/test": "^1.61.0"
+  },
+  "scripts": {
+    "test": "npx playwright test",
+    "test:ui": "npx playwright test --ui",
+    "codegen": "npx playwright codegen",
+    "install:browsers": "npx playwright install --with-deps chromium"
+  }
+}
