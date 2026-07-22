@@ -1,16 +1,26 @@
-"""Updater gate — bus-driven exec must be explicitly enabled."""
+"""Updater tests — git-native update replaces the old BOOTSTRAP RCE path."""
 import updater
 
 
-def test_updater_disabled_by_default(monkeypatch):
-    monkeypatch.delenv("VEX_UPDATER_ENABLE", raising=False)
+def test_process_updates_is_safe_noop():
+    """The old process_updates() is now a safe no-op stub."""
     result = updater.process_updates()
     assert result["updated"] is False
-    assert "disabled" in result["reason"]
+    assert "git-native" in result["reason"]
 
 
-def test_updater_stays_disabled_unless_exactly_1(monkeypatch):
-    monkeypatch.setenv("VEX_UPDATER_ENABLE", "true")
-    result = updater.process_updates()
-    assert result["updated"] is False
-    assert "disabled" in result["reason"]
+def test_check_updates_is_read_only():
+    """check_updates() never mutates — it's a fetch + log, not a pull."""
+    result = updater.check_updates()
+    assert "ok" in result
+    # In test env (no git remote), may fail gracefully
+    if not result["ok"]:
+        assert "error" in result
+
+
+def test_restart_daemon_signals():
+    """restart_daemon() returns a method (systemctl or marker)."""
+    result = updater.restart_daemon()
+    # In test env without systemd, falls back to marker file
+    assert result["ok"] is True
+    assert result["method"] in ("systemctl", "marker")

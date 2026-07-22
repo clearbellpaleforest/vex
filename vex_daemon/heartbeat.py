@@ -19,6 +19,8 @@ DRIFT_THRESHOLD = 0.05
 IDLE_THRESHOLD_MINUTES = 30
 DREAM_THRESHOLD_HOURS = 24
 SNAPSHOT_EVERY_N_TICKS = 12  # hourly
+STAGNATION_TICKS = 72        # 6 hours — warn if coherence unchanged
+COHERENCE_PRECISION = 0.0001  # floating-point tolerance
 
 
 class HeartbeatState:
@@ -122,6 +124,7 @@ async def run_heartbeat(
     import aiosqlite
 
     prev_coherence = None
+    stagnation_ticks = 0
     idle_ticks = 0
     first_idle_tick = False
     poll_count = 0
@@ -150,6 +153,18 @@ async def run_heartbeat(
             # 1. Compute coherence
             coherence = get_coherence_fn()
             state.mps_coherence = coherence
+
+            # 1a. Detect stagnation — coherence unchanged for many ticks
+            if prev_coherence is not None and abs(coherence - prev_coherence) < COHERENCE_PRECISION:
+                stagnation_ticks += 1
+            else:
+                stagnation_ticks = 0
+            if stagnation_ticks >= STAGNATION_TICKS:
+                await write_diary(
+                    f"Coherence stagnant at {coherence:.4f} for {stagnation_ticks} ticks "
+                    f"({stagnation_ticks * tick_interval // 3600}h) — possible calibration stall.",
+                    "warning")
+                stagnation_ticks = 0  # Reset so we don't spam every tick
 
             # 2. Compute drift
             if prev_coherence is not None:
@@ -269,15 +284,6 @@ def _bus_tick() -> None:
                             existing.add(line)
             except Exception:
                 pass
-    except Exception:
-        pass
-    # Check for auto-updates (BOOTSTRAP messages; gated by VEX_UPDATER_ENABLE)
-    try:
-        from updater import process_updates
-        result = process_updates()
-        if result.get("updated"):
-            import sys
-            print(f"UPDATER: applied {len(result.get('actions', []))} update(s)", file=sys.stderr)
     except Exception:
         pass
 

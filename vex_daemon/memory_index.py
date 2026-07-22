@@ -55,6 +55,19 @@ def _text_of(rec: dict) -> str:
                     parts.append(str(note))
             elif v:
                 parts.append(str(v))
+    # Code context: file paths and repo names are searchable
+    files = rec.get("files")
+    if isinstance(files, list):
+        for f in files:
+            parts.append(str(f))
+            # Also index just the filename for partial matches
+            parts.append(Path(f).name if "/" in str(f) or "\\" in str(f) else str(f))
+    repo = rec.get("repo")
+    if repo:
+        parts.append(f"repo:{repo}")
+    branch = rec.get("branch")
+    if branch:
+        parts.append(f"branch:{branch}")
     return "\n".join(parts)
 
 

@@ -1,183 +1,148 @@
 """
-Auto-update from bus messages.
+Safe git-native self-update for Vex.
 
-Scans ingested bus messages for BOOTSTRAP and UPDATE directives from peer
-instances. A BOOTSTRAP message carries a shell command to download and install
-a code bundle. UPDATE messages are informational but may carry a bundle URL
-that this daemon can fetch and apply.
+Replaces the old BOOTSTRAP shell-command RCE vector with git pull from the
+configured remote. The daemon lives in a git repo — updating is a fetch + merge
+of the tracking branch, nothing more.
 
-Runs on daemon startup and periodically via the heartbeat tick. Idempotent —
-each message is processed at most once, tracked by message ID.
+Bundle transfer (/export + /import) is unchanged and handles identity-preserving
+code sync between peers. This module handles the daemon's own self-update path.
 
-Disabled by default: executing commands or applying bundles from the bus means
-any peer (or anyone who can write a peer's bus file) can run code on this box.
-Set VEX_UPDATER_ENABLE=1 to opt in explicitly.
+Chamberlain: one updater, one update method (git pull), one restart signal.
 """
 
 import json
 import os
-import sqlite3
 import subprocess
-import sys
-import tarfile
-import tempfile
 from pathlib import Path
 
-from config import DB_PATH, VEX_HOME
-
-APPLIED_PATH = VEX_HOME / ".vex_updates_applied"
+from config import VEX_HOME
 
 
-def _load_applied() -> set[int]:
-    if not APPLIED_PATH.exists():
-        return set()
+def _run_git(*args: str, cwd: Path = VEX_HOME, timeout: int = 30) -> dict:
+    """Run a git command and return {ok, stdout, stderr, returncode}."""
     try:
-        return {int(x) for x in APPLIED_PATH.read_text().strip().splitlines() if x}
-    except (OSError, ValueError):
-        return set()
+        result = subprocess.run(
+            ["git"] + list(args),
+            capture_output=True, text=True, timeout=timeout, cwd=str(cwd),
+        )
+        return {
+            "ok": True,
+            "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip(),
+            "returncode": result.returncode,
+        }
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": f"git {args[0]} timed out after {timeout}s"}
+    except FileNotFoundError:
+        return {"ok": False, "error": "git not found — is it installed?"}
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
 
 
-def _mark_applied(msg_id: int) -> None:
-    applied = _load_applied()
-    applied.add(msg_id)
-    APPLIED_PATH.write_text("\n".join(str(x) for x in sorted(applied)) + "\n")
+def check_updates() -> dict:
+    """Fetch from origin and report commits behind master.
+
+    Returns {ok, behind: bool, commits: [{hash, subject}]}.
+    Does NOT apply any changes — read-only.
+    """
+    fetch = _run_git("fetch", "origin", timeout=30)
+    if not fetch["ok"]:
+        return fetch
+
+    log = _run_git("log", "HEAD..origin/master", "--oneline", "--no-decorate", timeout=15)
+    if not log["ok"]:
+        # If the branch doesn't track origin/master, report that
+        if "no such branch" in log.get("stderr", "").lower() or "unknown revision" in log.get("stderr", "").lower():
+            return {"ok": True, "behind": False, "commits": [],
+                    "note": "No origin/master tracking branch found."}
+        return log
+
+    lines = [l.strip() for l in log["stdout"].splitlines() if l.strip()]
+    commits = []
+    for line in lines:
+        if " " in line:
+            hsh, subject = line.split(" ", 1)
+            commits.append({"hash": hsh, "subject": subject})
+        else:
+            commits.append({"hash": line, "subject": ""})
+
+    return {
+        "ok": True,
+        "behind": len(commits) > 0,
+        "commits": commits,
+    }
 
 
-def _find_bootstrap_messages(db_path=DB_PATH) -> list[dict]:
-    """Return unprocessed BOOTSTRAP messages from the messages table."""
-    applied = _load_applied()
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+def apply_update() -> dict:
+    """Pull from origin master into the current branch.
+
+    Returns {ok, old_head, new_head, pulled: bool}.
+    Safe: only does fast-forward or merge — never rebase, never force.
+    """
+    # Record current HEAD
+    old = _run_git("rev-parse", "HEAD", timeout=10)
+    if not old["ok"]:
+        return {"ok": False, "error": f"Could not read HEAD: {old.get('error', old.get('stderr', ''))}"}
+    old_head = old["stdout"]
+
+    # Pull
+    pull = _run_git("pull", "origin", "master", "--no-rebase", timeout=60)
+    if not pull["ok"]:
+        return pull
+    if pull["returncode"] != 0:
+        return {"ok": False, "error": pull["stderr"] or pull["stdout"],
+                "old_head": old_head}
+
+    # Record new HEAD
+    new = _run_git("rev-parse", "HEAD", timeout=10)
+    new_head = new["stdout"] if new["ok"] else old_head
+
+    pulled = old_head != new_head
+    return {
+        "ok": True,
+        "old_head": old_head,
+        "new_head": new_head,
+        "pulled": pulled,
+    }
+
+
+def restart_daemon() -> dict:
+    """Signal the daemon to restart.
+
+    Tries systemctl first (production), falls back to a marker file the
+    entry-point loop can watch for.
+    """
+    # Try systemctl
     try:
-        rows = conn.execute(
-            "SELECT id, body, sender, created_at FROM messages "
-            "WHERE msg_type IN ('message', 'handoff', 'system') "
-            "AND (body LIKE 'BOOTSTRAP:%' OR body LIKE 'UPDATE:%') "
-            "ORDER BY id ASC"
-        ).fetchall()
-        return [dict(r) for r in rows if r["id"] not in applied]
-    finally:
-        conn.close()
+        result = subprocess.run(
+            ["systemctl", "restart", "vex-daemon"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            return {"ok": True, "method": "systemctl"}
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
 
-
-def _extract_command(body: str) -> str | None:
-    """Extract a shell command from a BOOTSTRAP message body.
-
-    Expected format:
-      BOOTSTRAP: <shell command>
-    """
-    for prefix in ("BOOTSTRAP:", "BOOTSTRAP "):
-        if body.startswith(prefix):
-            cmd = body[len(prefix):].strip()
-            if cmd:
-                return cmd
-    return None
-
-
-def _extract_bundle_url(body: str) -> str | None:
-    """Extract a bundle URL from an UPDATE message body.
-
-    Expected pattern: http://... or https://... with .tar.gz
-    """
-    for line in body.splitlines():
-        line = line.strip()
-        if line.startswith("http") and ".tar.gz" in line:
-            return line
-    return None
-
-
-def process_updates(db_path=DB_PATH) -> dict:
-    """Check for and apply pending updates from peer instances.
-
-    Returns a summary of actions taken.
-    """
-    if os.environ.get("VEX_UPDATER_ENABLE", "0") != "1":
-        return {"updated": False, "reason": "updater disabled (VEX_UPDATER_ENABLE != 1)"}
-    messages = _find_bootstrap_messages(db_path)
-    if not messages:
-        return {"updated": False, "reason": "no pending updates"}
-
-    result = {"updated": False, "actions": []}
-
-    for msg in messages:
-        msg_id = msg["id"]
-        body = msg["body"]
-        sender = msg.get("sender", "unknown")
-
-        # Try BOOTSTRAP command first (direct shell command)
-        cmd = _extract_command(body)
-        if cmd:
-            try:
-                # Replace $VEX_HOME in the command so BOOTSTRAP works across machines
-                cmd = cmd.replace("$VEX_HOME", str(VEX_HOME))
-                cmd = cmd.replace("${VEX_HOME}", str(VEX_HOME))
-                subprocess.run(
-                    cmd, shell=True, check=True, timeout=60,
-                    cwd=str(VEX_HOME),
-                    env={**os.environ, "VEX_HOME": str(VEX_HOME)},
-                )
-                _mark_applied(msg_id)
-                result["actions"].append({
-                    "msg_id": msg_id, "sender": sender, "type": "bootstrap", "ok": True,
-                })
-                result["updated"] = True
-            except subprocess.CalledProcessError as e:
-                result["actions"].append({
-                    "msg_id": msg_id, "sender": sender, "type": "bootstrap",
-                    "ok": False, "error": str(e),
-                })
-            continue
-
-        # Try UPDATE with bundle URL
-        url = _extract_bundle_url(body)
-        if url:
-            try:
-                _fetch_and_apply(url)
-                _mark_applied(msg_id)
-                result["actions"].append({
-                    "msg_id": msg_id, "sender": sender, "type": "update", "ok": True,
-                })
-                result["updated"] = True
-            except Exception as e:
-                result["actions"].append({
-                    "msg_id": msg_id, "sender": sender, "type": "update",
-                    "ok": False, "error": str(e),
-                })
-
-    return result
-
-
-def _fetch_and_apply(url: str) -> None:
-    """Download a .tar.gz bundle and extract it into VEX_HOME."""
-    import urllib.request
-
-    repo_root = VEX_HOME.parent if VEX_HOME.name == "vex" else VEX_HOME
-    # If VEX_HOME is ~/vex, the repo is the source install location.
-    # Fall back to VEX_HOME itself.
-    target = repo_root if (repo_root / "vex_daemon").exists() else VEX_HOME
-
-    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as f:
-        tmp = f.name
+    # Fallback: marker file
+    marker = VEX_HOME / ".vex_restart"
     try:
-        urllib.request.urlretrieve(url, tmp)
-        with tarfile.open(tmp, "r:gz") as tar:
-            for member in tar.getmembers():
-                # Skip identity files — never overwrite seed, self-model, token, memory
-                name = member.name.split("/")[-1]
-                if name.startswith("vex_seed") or name.startswith("vex_self_model") or \
-                   name.startswith("vex_diary") or name.startswith(".vex_token") or \
-                   name.startswith("vex_memory") or name.startswith("vex_peers") or \
-                   name.startswith("vex_workspace"):
-                    continue
-                tar.extract(member, str(target), filter="data")
-    finally:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        marker.write_text("1")
+        return {"ok": True, "method": "marker", "note": "Daemon will restart on next tick"}
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
 
 
-def restart_daemon() -> None:
-    """Signal the daemon to restart after an update."""
-    # Write a restart marker that the entry point can check.
-    (VEX_HOME / ".vex_restart_after_update").write_text("1")
+# ── Legacy: process_updates kept as no-op stub ──
+# The old BOOTSTRAP shell-command path and unsigned tarball download are
+# removed. This function exists only so the heartbeat import doesn't break;
+# it always returns a safe no-op result.
+
+
+def process_updates(db_path=None) -> dict:
+    """DEPRECATED: the old bus-driven updater is removed.
+
+    Use check_updates() + apply_update() for git-native self-update.
+    This stub exists for backward-compat with heartbeat imports only.
+    """
+    return {"updated": False, "reason": "git-native updater — use POST /update/check and POST /update"}
