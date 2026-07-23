@@ -21,6 +21,10 @@ to the right agent for each task.
 | **vex-sysadmin** | System health, logs, services, disk/memory | haiku | Diagnosing down services, checking logs, managing systemd |
 | **vex-harness** | Agent team design, skill generation | sonnet | Building harnesses for new projects, designing agent architectures |
 | **vex-zepp** | Zepp OS watch app development | sonnet | Wearable UI, BLE comms, watch voice integration |
+| **vex-auditor** | Adversarial code audit — bugs, dead code, security | sonnet | Pre-merge review, migration verification, security audit |
+| **vex-db** | SQLite schema design, query optimization, FTS5, migrations | sonnet | Database design, performance, inspection |
+| **vex-pipeline** | OCR/data pipeline — Town Records ingestion, OCR routing, Qdrant | sonnet | OCR failures, pipeline debugging, embeddings |
+| **vex-doc** | Technical writer — READMEs, architecture docs, skills, agents | sonnet | Writing or updating project documentation |
 
 # Dispatch Rules
 
